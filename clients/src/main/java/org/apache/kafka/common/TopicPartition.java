@@ -26,7 +26,9 @@ public final class TopicPartition implements Serializable {
     private static final long serialVersionUID = -613627415771699627L;
 
     private int hash = 0;
+    // 分区编号
     private final int partition;
+    // 分区所属的topic名称
     private final String topic;
 
     public TopicPartition(String topic, int partition) {

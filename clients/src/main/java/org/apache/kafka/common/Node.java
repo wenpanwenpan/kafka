@@ -24,11 +24,15 @@ import java.util.Objects;
 public class Node {
 
     private static final Node NO_NODE = new Node(-1, "", -1);
-
+    // broker节点的ID
     private final int id;
+    // broker节点的ID字符串
     private final String idString;
+    // broker 节点的地址，用于socket连接
     private final String host;
+    // 端口
     private final int port;
+    // broker节点的机架
     private final String rack;
 
     // Cache hashCode as it is called in performance sensitive parts of the code (e.g. RecordAccumulator.ready)

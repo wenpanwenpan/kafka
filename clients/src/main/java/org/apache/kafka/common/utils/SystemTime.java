@@ -49,9 +49,10 @@ public class SystemTime implements Time {
                     return;
 
                 long currentTimeMs = milliseconds();
+                // 等待超时了
                 if (currentTimeMs >= deadlineMs)
                     throw new TimeoutException("Condition not satisfied before deadline");
-
+                // 带超时时间的等待
                 obj.wait(deadlineMs - currentTimeMs);
             }
         }

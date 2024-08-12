@@ -235,8 +235,10 @@ public class Sender implements Runnable {
         log.debug("Starting Kafka producer I/O thread.");
 
         // main loop, runs until close is called
+        // 用running字段来标识当前sender线程是否正常运行
         while (running) {
             try {
+                // 周期性的执行该方法
                 runOnce();
             } catch (Exception e) {
                 log.error("Uncaught error in kafka producer I/O thread: ", e);
@@ -293,6 +295,7 @@ public class Sender implements Runnable {
      *
      */
     void runOnce() {
+        // 事务相关的逻辑
         if (transactionManager != null) {
             try {
                 transactionManager.maybeResolveSequences();
@@ -321,25 +324,33 @@ public class Sender implements Runnable {
         }
 
         long currentTimeMs = time.milliseconds();
+        // 创建发送到kafka集群的请求
         long pollTimeout = sendProducerData(currentTimeMs);
+        // 真正执行网络io的地方，会将请求发送出去，并处理接收到的响应
         client.poll(pollTimeout, currentTimeMs);
     }
 
     private long sendProducerData(long now) {
+        // 从元数据缓存中获取集群元数据
         Cluster cluster = metadata.fetch();
         // get the list of partitions with data ready to send
+        // 通过元数据cluster获取要发送的节点的leader分区信息
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
         // if there are any partitions whose leaders are not known yet, force metadata update
+        // 如果topic的 leader 分区对应的节点不存在则就需要强制更新下元数据缓存了，什么情况会不存在leader呢？
+        // 比如：分区正在选主或leader分区所在节点正好宕机了，所以需要强制更新元数据，保证元数据的一致性
         if (!result.unknownLeaderTopics.isEmpty()) {
             // The set of topics with unknown leader contains topics with leader election pending as well as
             // topics which may have expired. Add the topic again to metadata to ensure it is included
             // and request metadata update, since there are messages to send to the topic.
+            // 将topic加入本地元数据缓存列表
             for (String topic : result.unknownLeaderTopics)
                 this.metadata.add(topic, now);
 
             log.debug("Requesting metadata update due to unknown leader topics from the batched records: {}",
                 result.unknownLeaderTopics);
+            // 强制标记元数据更新标识
             this.metadata.requestUpdate();
         }
 

@@ -48,8 +48,9 @@ public class MetadataCache {
     private final Set<String> invalidTopics;
     private final Set<String> internalTopics;
     private final Node controller;
+    // key: topic的分区信息，value：分区元数据
     private final Map<TopicPartition, PartitionMetadata> metadataByPartition;
-
+    // 保存了元数据基础信息
     private Cluster clusterInstance;
 
     MetadataCache(String clusterId,
@@ -81,7 +82,7 @@ public class MetadataCache {
         for (PartitionMetadata p : partitions) {
             this.metadataByPartition.put(p.topicPartition, p);
         }
-
+        // metadata里最核心的是cluster，保存了元数据基础信息
         if (clusterInstance == null) {
             computeClusterView();
         } else {
@@ -131,23 +132,27 @@ public class MetadataCache {
                             Set<String> addInternalTopics,
                             Node newController,
                             BiPredicate<String, Boolean> retainTopic) {
-
+        // 是否应该保留该topic的本地元数据缓存
         Predicate<String> shouldRetainTopic = topic -> retainTopic.test(topic, internalTopics.contains(topic));
 
         Map<TopicPartition, PartitionMetadata> newMetadataByPartition = new HashMap<>(addPartitions.size());
+        // 将拉取下来的所有topic的所有分区信息全部添加到 newMetadataByPartition 中
         for (PartitionMetadata partition : addPartitions) {
             newMetadataByPartition.put(partition.topicPartition, partition);
         }
+        // 遍历本地缓存里的分区元数据信息
         for (Map.Entry<TopicPartition, PartitionMetadata> entry : metadataByPartition.entrySet()) {
+            // 如果该topic需要继续保留在本地缓存中，则添加到集合
             if (shouldRetainTopic.test(entry.getKey().topic())) {
                 newMetadataByPartition.putIfAbsent(entry.getKey(), entry.getValue());
             }
         }
-
+        // 将新拉取下来的topic元数据信息和原来本地缓存里的topic元数据信息进行合并
         Set<String> newUnauthorizedTopics = fillSet(addUnauthorizedTopics, unauthorizedTopics, shouldRetainTopic);
         Set<String> newInvalidTopics = fillSet(addInvalidTopics, invalidTopics, shouldRetainTopic);
         Set<String> newInternalTopics = fillSet(addInternalTopics, internalTopics, shouldRetainTopic);
 
+        // 重新创建一个本地缓存对象
         return new MetadataCache(newClusterId, newNodes, newMetadataByPartition.values(), newUnauthorizedTopics,
                 newInvalidTopics, newInternalTopics, newController);
     }
@@ -176,6 +181,7 @@ public class MetadataCache {
                 .stream()
                 .map(metadata -> MetadataResponse.toPartitionInfo(metadata, nodes))
                 .collect(Collectors.toList());
+        // 实例化cluster
         this.clusterInstance = new Cluster(clusterId, nodes.values(), partitionInfos, unauthorizedTopics,
                 invalidTopics, internalTopics, controller);
     }
@@ -187,6 +193,8 @@ public class MetadataCache {
             nodes.put(nodeId, new Node(nodeId, address.getHostString(), address.getPort()));
             nodeId--;
         }
+        // 初始化MetadataCache元数据缓存
+        // 此时还没有获取到元数据，此时的元数据缓存都是空的数据和集合组成
         return new MetadataCache(null, nodes, Collections.emptyList(),
                 Collections.emptySet(), Collections.emptySet(), Collections.emptySet(),
                 null, Cluster.bootstrap(addresses));

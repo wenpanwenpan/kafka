@@ -31,20 +31,32 @@ import java.util.Set;
 
 /**
  * An immutable representation of a subset of the nodes, topics, and partitions in the Kafka cluster.
+ * topic的详细信息，比如：leader所在节点，replica所在节点，ISR列表等都是在cluster实例中保存的
  */
 public final class Cluster {
 
     private final boolean isBootstrapConfigured;
+    // kafka集群中的broker节点集合，代表kafka的服务器信息
     private final List<Node> nodes;
+    // 未授权topic集合
     private final Set<String> unauthorizedTopics;
+    // 无效的topic集合
     private final Set<String> invalidTopics;
+    // 内部topic集合
     private final Set<String> internalTopics;
+    // controller 节点信息
     private final Node controller;
+    // topic对应的partition信息map，存放的partition不一定有leader副本，key：topic，value：topic的分区信息集合
     private final Map<TopicPartition, PartitionInfo> partitionsByTopicPartition;
+    // key为topic，value为 partition 信息集合，存放的partition一定有leader副本
     private final Map<String, List<PartitionInfo>> partitionsByTopic;
+    // topic中可用的partition信息map，key：topic名称，value：可用的partition信息集合。存放的partition必须是有leader副本的partition
     private final Map<String, List<PartitionInfo>> availablePartitionsByTopic;
+    // broker 对应的partition信息map，key：broker的ID，value： 该broker上的partition信息集合
     private final Map<Integer, List<PartitionInfo>> partitionsByNode;
+    // broker 对应的节点信息map，key: broker的ID，value：表示该节点的node实例
     private final Map<Integer, Node> nodesById;
+    // kafka集群ID信息
     private final ClusterResource clusterResource;
 
     /**

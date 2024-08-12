@@ -18,13 +18,20 @@ package org.apache.kafka.common;
 
 /**
  * This is used to describe per-partition state in the MetadataResponse.
+ * topic的分区信息
  */
 public class PartitionInfo {
+    // 分区所属的topic
     private final String topic;
+    // 分区编号ID
     private final int partition;
+    // 分区leader副本信息（也就是leader副本所在的node机器信息），唯一进行通信的节点
     private final Node leader;
+    // 全部副本信息
     private final Node[] replicas;
+    // ISR 副本信息，follower角色
     private final Node[] inSyncReplicas;
+    // 离线的副本信息
     private final Node[] offlineReplicas;
 
     // Used only by tests

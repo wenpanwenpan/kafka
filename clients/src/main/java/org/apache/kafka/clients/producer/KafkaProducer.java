@@ -433,9 +433,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             if (metadata != null) {
                 this.metadata = metadata;
             } else {
-                // 初始化集群元数据
+                // 初始化集群元数据，这里只是new了这个元数据缓存对象，此时还没有元数据信息，元数据是有sender线程去找broker拉取的
                 this.metadata = new ProducerMetadata(retryBackoffMs,
+                        // 元数据过期时间，默认5分钟
                         config.getLong(ProducerConfig.METADATA_MAX_AGE_CONFIG),
+                        // topic最大空闲时间，如果在规定的时间内没有被访问，则将从缓存中删除，下次访问时强制获取元数据
                         config.getLong(ProducerConfig.METADATA_MAX_IDLE_CONFIG),
                         logContext,
                         clusterResourceListeners,
@@ -901,7 +903,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     @Override
     public Future<RecordMetadata> send(ProducerRecord<K, V> record, Callback callback) {
         // intercept the record, which can be potentially modified; this method does not throw exceptions
+        // 执行消息拦截器
         ProducerRecord<K, V> interceptedRecord = this.interceptors.onSend(record);
+        // 真实发送消息的地方
         return doSend(interceptedRecord, callback);
     }
 
@@ -918,12 +922,13 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private Future<RecordMetadata> doSend(ProducerRecord<K, V> record, Callback callback) {
         TopicPartition tp = null;
         try {
+            // 如果sender线程为空或者不运行则报错
             throwIfProducerClosed();
             // first make sure the metadata for the topic is available
             long nowMs = time.milliseconds();
             ClusterAndWaitTime clusterAndWaitTime;
             try {
-                // 1、等待元数据更新即确认数据要发送到的topic的metadata是可用的
+                // 1、等待元数据更新即确认数据要发送到的topic的metadata是可用的，所以说发送消息前一定要获取到元数据
                 clusterAndWaitTime = waitOnMetadata(record.topic(), record.partition(), nowMs, maxBlockTimeMs);
             } catch (KafkaException e) {
                 if (metadata.isClosed())
@@ -1042,16 +1047,18 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      */
     private ClusterAndWaitTime waitOnMetadata(String topic, Integer partition, long nowMs, long maxWaitMs) throws InterruptedException {
         // add topic to metadata topic list if it is not there already and reset expiry
+        // 1、从元数据缓存中获取元数据
         Cluster cluster = metadata.fetch();
-
+        // 2、判断topic是否是无效的topic
         if (cluster.invalidTopics().contains(topic))
             throw new InvalidTopicException(topic);
-
+        // 3、将topic放入元数据topic列表中并指定过期时间
         metadata.add(topic, nowMs);
-
+        // 4、从元数据缓存中获取topic对应的分区数
         Integer partitionsCount = cluster.partitionCountForTopic(topic);
         // Return cached metadata if we have it, and if the record's partition is either undefined
         // or within the known partition range
+        // 5、满足这些条件后就不用去broker拉取元数据了，直接从元数据缓存中返回元数据
         if (partitionsCount != null && (partition == null || partition < partitionsCount))
             return new ClusterAndWaitTime(cluster, 0);
 
@@ -1060,16 +1067,21 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         // Issue metadata requests until we have metadata for the topic and the requested partition,
         // or until maxWaitTimeMs is exceeded. This is necessary in case the metadata
         // is stale and the number of partitions for this topic has increased in the meantime.
+        // 6、不停的轮询，唤醒sender线程更新元数据
         do {
             if (partition != null) {
                 log.trace("Requesting metadata update for partition {} of topic {}.", partition, topic);
             } else {
                 log.trace("Requesting metadata update for topic {}.", topic);
             }
+            // 7、将topic及过期时间添加到topic元数据列表中
             metadata.add(topic, nowMs + elapsed);
+            // 8、标记元数据更新表示，获取元数据版本号
             int version = metadata.requestUpdateForTopic(topic);
+            // 9、唤醒sender线程，详见sender线程的 run 方法
             sender.wakeup();
             try {
+                // 10、阻塞的等待sender线程更新元数据成功
                 metadata.awaitUpdate(version, remainingWaitMs);
             } catch (TimeoutException ex) {
                 // Rethrow with original maxWaitMs to prevent logging exception with remainingWaitMs
@@ -1077,8 +1089,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                         String.format("Topic %s not present in metadata after %d ms.",
                                 topic, maxWaitMs));
             }
+            // 11、到这里说明元数据应该更新成功了，再次获取一下元数据
             cluster = metadata.fetch();
+            // 12、计算一下等待更新完成元数据的时间
             elapsed = time.milliseconds() - nowMs;
+            // 13、如果超时了，则抛出异常
             if (elapsed >= maxWaitMs) {
                 throw new TimeoutException(partitionsCount == null ?
                         String.format("Topic %s not present in metadata after %d ms.",
@@ -1088,9 +1103,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             }
             metadata.maybeThrowExceptionForTopic(topic);
             remainingWaitMs = maxWaitMs - elapsed;
+            // 14、获取元数据的分区数据
             partitionsCount = cluster.partitionCountForTopic(topic);
+            // 注意观察这里的退出条件
         } while (partitionsCount == null || (partition != null && partition >= partitionsCount));
-
+        // 15、返回元数据信息
         return new ClusterAndWaitTime(cluster, elapsed);
     }
 
