@@ -741,9 +741,11 @@ public class NetworkClient implements KafkaClient {
 
     private static Struct parseStructMaybeUpdateThrottleTimeMetrics(ByteBuffer responseBuffer, RequestHeader requestHeader,
                                                                     Sensor throttleTimeSensor, long now) {
+        // 响应头
         ResponseHeader responseHeader = ResponseHeader.parse(responseBuffer,
             requestHeader.apiKey().responseHeaderVersion(requestHeader.apiVersion()));
         // Always expect the response version id to be the same as the request version id
+        // 响应体
         Struct responseBody = requestHeader.apiKey().parseResponse(requestHeader.apiVersion(), responseBuffer);
         correlate(requestHeader, responseHeader);
         if (throttleTimeSensor != null && responseBody.hasField(CommonFields.THROTTLE_TIME_MS))
@@ -881,6 +883,7 @@ public class NetworkClient implements KafkaClient {
             InFlightRequest req = inFlightRequests.completeNext(source);
             Struct responseStruct = parseStructMaybeUpdateThrottleTimeMetrics(receive.payload(), req.header,
                 throttleTimeSensor, now);
+            // 解析响应体
             AbstractResponse response = AbstractResponse.
                 parseResponse(req.header.apiKey(), responseStruct, req.header.apiVersion());
 
@@ -1135,7 +1138,7 @@ public class NetworkClient implements KafkaClient {
                 // 更新失败
                 this.metadata.failedUpdate(now);
             } else {
-                // 如果更新成功，则开始更新本地元数据
+                // 如果更新成功，则开始更新本地元数据【重点】
                 this.metadata.update(inProgress.requestVersion, response, inProgress.isPartialUpdate, now);
             }
 

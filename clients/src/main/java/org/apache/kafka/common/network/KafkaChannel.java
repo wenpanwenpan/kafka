@@ -62,6 +62,7 @@ import java.util.function.Supplier;
  * <li>a {@link ChannelMuteState} to document if the channel has been muted due
  * to memory pressure or other reasons</li>
  * </ul>
+ * KafkaChannel 是kafka对读buffer（NetworkReceive） + 写buffer(NetworkSend) + nio的channel(也就是TransportLayer)的封装
  */
 public class KafkaChannel implements AutoCloseable {
     private static final long MIN_REAUTH_INTERVAL_ONE_SECOND_NANOS = 1000 * 1000 * 1000;
@@ -112,23 +113,32 @@ public class KafkaChannel implements AutoCloseable {
         THROTTLE_ENDED
     }
 
+    // 节点ID
     private final String id;
+    // 传输层对象（也可以理解为NIO中的channel）
     private final TransportLayer transportLayer;
     private final Supplier<Authenticator> authenticatorCreator;
     private Authenticator authenticator;
     // Tracks accumulated network thread time. This is updated on the network thread.
     // The values are read and reset after each response is sent.
     private long networkThreadTimeNanos;
+    // 最大能接收请求的字节数
     private final int maxReceiveSize;
+    // 内存池，用来分配指定大小的byteBuffer
     private final MemoryPool memoryPool;
     private final ChannelMetadataRegistry metadataRegistry;
+    // 读buffer，用于数据接收。kafkaChannel读取到的数据就会存储到receive里，当receive读满，一个请求就完整读取了
     private NetworkReceive receive;
+    // 写buffer，用于数据发送，每个send表示一个单独的发送请求，只需要将待发送的buffer赋值到该变量，然后调用write方法就会将数据发送到channel里了
     private Send send;
     // Track connection and mute state of channels to enable outstanding requests on channels to be
     // processed after the channel is disconnected.
+    // 连接是否关闭
     private boolean disconnected;
     private ChannelMuteState muteState;
+    // 连接状态
     private ChannelState state;
+    // 需要连接的远端地址
     private SocketAddress remoteAddress;
     private int successfulAuthentications;
     private boolean midWrite;
@@ -374,26 +384,35 @@ public class KafkaChannel implements AutoCloseable {
     public void setSend(Send send) {
         if (this.send != null)
             throw new IllegalStateException("Attempt to begin a send operation with prior send operation still in progress, connection id is " + id);
+        // 设置要发送的消息字段
         this.send = send;
+        // 调用传输层，注册写事件到selector上
         this.transportLayer.addInterestOps(SelectionKey.OP_WRITE);
     }
 
+    // 可能发送完成
     public Send maybeCompleteSend() {
+        // 已经发送完成
         if (send != null && send.completed()) {
             midWrite = false;
+            // 数据发送到channel完成后就要从selector上取消op_write事件，不然selector会一直通知channel此时可写
             transportLayer.removeInterestOps(SelectionKey.OP_WRITE);
             Send result = send;
+            // 将send对象置空，下次要发送数据到channel里时只需要将要发送的buffer赋值给send属性，然后调用write方法即可发送
             send = null;
+            // 返回发送的数据
             return result;
         }
         return null;
     }
 
     public long read() throws IOException {
+        // 如果receive为空则表示数据已经读取完成，需要重新实例化对象
         if (receive == null) {
+            // 重新实例化对象，后续的数据就读取到这里
             receive = new NetworkReceive(maxReceiveSize, id, memoryPool);
         }
-
+        // 如果未读取完，尝试将数据读取到 receive 里
         long bytesReceived = receive(this.receive);
 
         if (this.receive.requiredMemoryAmountKnown() && !this.receive.memoryAllocated() && isInMutableState()) {
@@ -407,21 +426,28 @@ public class KafkaChannel implements AutoCloseable {
         return receive;
     }
 
+    // 判断数据是否已经完成读取到 receive 的buffer里，如果完成读取了，则返回读取到的buffer，并把当前receive buffer情况，用于下次再读取
     public NetworkReceive maybeCompleteReceive() {
+        // 数据已经完全读取到 receive 中了
         if (receive != null && receive.complete()) {
+            // 将buffer的position重置为0，后续从receive读数据的时候就从0位置开始读取
             receive.payload().rewind();
             NetworkReceive result = receive;
+            // 将receive置为空，以便于下次再可以将channel里的数据读取到receive buffer里
             receive = null;
+            // 响应读取到的数据
             return result;
         }
         return null;
     }
 
     public long write() throws IOException {
+        // 如果send为空，则认为已经发送完毕了
         if (send == null)
             return 0;
 
         midWrite = true;
+        // 将send里的数据写入到transportLayer（也就是channel）
         return send.writeTo(transportLayer);
     }
 
@@ -444,6 +470,7 @@ public class KafkaChannel implements AutoCloseable {
 
     private long receive(NetworkReceive receive) throws IOException {
         try {
+            // 将数据从 channel读取到 receive buffer里
             return receive.readFrom(transportLayer);
         } catch (SslAuthenticationException e) {
             // With TLSv1.3, post-handshake messages may throw SSLExceptions, which are

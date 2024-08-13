@@ -22,6 +22,9 @@ package org.apache.kafka.common.network;
  * and other network Channel implementations.
  * As NetworkClient replaces BlockingChannel and other implementations we will be using KafkaChannel as
  * a network I/O channel.
+ * 该接口是对NIO中的socketChannel的封装，一共两个实现类：
+ * 1、PlaintextTransportLayer 表示明文网络传输实现
+ * 2、SslTransportLayer 加密网络传输实现
  */
 import java.io.IOException;
 import java.nio.channels.FileChannel;
@@ -43,6 +46,7 @@ public interface TransportLayer extends ScatteringByteChannel, GatheringByteChan
 
     /**
      * Finishes the process of connecting a socket channel.
+     * 判断网络连接是否完成
      */
     boolean finishConnect() throws IOException;
 

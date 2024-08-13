@@ -26,11 +26,12 @@ public interface Send {
 
     /**
      * The id for the destination of this send
+     * 要把数据写入目标的 channel ID
      */
     String destination();
 
     /**
-     * Is this send complete?
+     * Is this send complete? 要发送的数据是否都发送完了
      */
     boolean completed();
 
@@ -40,11 +41,12 @@ public interface Send {
      * @param channel The Channel to write to
      * @return The number of bytes written
      * @throws IOException If the write fails
+     * 把数据写入到对应的channel中
      */
     long writeTo(GatheringByteChannel channel) throws IOException;
 
     /**
-     * Size of the send
+     * Size of the send 发送的数据的大小
      */
     long size();
 
