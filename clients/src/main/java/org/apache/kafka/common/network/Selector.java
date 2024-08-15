@@ -113,7 +113,7 @@ public class Selector implements Selectable, AutoCloseable {
     // 以接收完毕的buffer集合，key：channelID，value：buffer集合（一个NetworkReceive代表server端响应的一次消息）
     // sender线程会将selector上管理的每个channel里的数据都读取到这里进行缓存
     private final LinkedHashMap<String, NetworkReceive> completedReceives;
-    // 立即连接的channel集合
+    // 立即连接的channel集合（也就是刚建立连接完成的channel集合）
     private final Set<SelectionKey> immediatelyConnectedKeys;
     // 关闭连接的channel集合
     private final Map<String, KafkaChannel> closingChannels;
