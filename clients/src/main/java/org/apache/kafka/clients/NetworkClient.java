@@ -560,7 +560,7 @@ public class NetworkClient implements KafkaClient {
         // 尝试更新元数据
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
         try {
-            // 执行io操作
+            // 执行io操作（就是在这里进行的感知有读写事件发生的channel连接）
             this.selector.poll(Utils.min(timeout, metadataTimeout, defaultRequestTimeoutMs));
         } catch (IOException e) {
             log.error("Unexpected error during I/O", e);

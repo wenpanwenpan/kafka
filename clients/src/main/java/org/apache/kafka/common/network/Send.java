@@ -21,6 +21,7 @@ import java.nio.channels.GatheringByteChannel;
 
 /**
  * This interface models the in-progress sending of data to a specific destination
+ * 可以理解为buffer
  */
 public interface Send {
 

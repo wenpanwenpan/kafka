@@ -179,10 +179,15 @@ public class KafkaChannel implements AutoCloseable {
     public void prepare() throws AuthenticationException, IOException {
         boolean authenticating = false;
         try {
+            // channel没有ready
             if (!transportLayer.ready())
+                // 进行握手
                 transportLayer.handshake();
+            // 连接已经ready但是没有认证
             if (transportLayer.ready() && !authenticator.complete()) {
+                // 认证中
                 authenticating = true;
+                // 连接开始认证
                 authenticator.authenticate();
             }
         } catch (AuthenticationException e) {
@@ -197,7 +202,9 @@ public class KafkaChannel implements AutoCloseable {
             throw e;
         }
         if (ready()) {
+            // 记录认证成功的次数
             ++successfulAuthentications;
+            // 修改连接状态为ready
             state = ChannelState.READY;
         }
     }
@@ -222,10 +229,12 @@ public class KafkaChannel implements AutoCloseable {
     public boolean finishConnect() throws IOException {
         //we need to grab remoteAddr before finishConnect() is called otherwise
         //it becomes inaccessible if the connection was refused.
+        // 获取nio底层的socketChannel
         SocketChannel socketChannel = transportLayer.socketChannel();
         if (socketChannel != null) {
             remoteAddress = socketChannel.getRemoteAddress();
         }
+        // 看下该连接是否以完成连接
         boolean connected = transportLayer.finishConnect();
         if (connected) {
             if (ready()) {
@@ -390,7 +399,7 @@ public class KafkaChannel implements AutoCloseable {
         this.transportLayer.addInterestOps(SelectionKey.OP_WRITE);
     }
 
-    // 可能发送完成
+    // 可能发送完成，返回空则表示未发送完成，反之表示发送完成
     public Send maybeCompleteSend() {
         // 已经发送完成
         if (send != null && send.completed()) {
