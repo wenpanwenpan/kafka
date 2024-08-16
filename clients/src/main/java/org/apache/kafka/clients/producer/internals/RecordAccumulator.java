@@ -454,7 +454,9 @@ public final class RecordAccumulator {
                 ProducerBatch batch = deque.peekFirst();
                 if (batch != null) {
                     TopicPartition part = entry.getKey();
+                    // 从集群信息缓存中获取 part 分区的leader
                     Node leader = cluster.leaderFor(part);
+                    // 该分区没有leader，则添加到无leader分区的topic集合
                     if (leader == null) {
                         // This is a partition for which leader is not known, but messages are available to send.
                         // Note that entries are currently not removed from batches when deque is empty.
@@ -825,6 +827,7 @@ public final class RecordAccumulator {
     public final static class ReadyCheckResult {
         public final Set<Node> readyNodes;
         public final long nextReadyCheckDelayMs;
+        // 分区无leader的topic集合
         public final Set<String> unknownLeaderTopics;
 
         public ReadyCheckResult(Set<Node> readyNodes, long nextReadyCheckDelayMs, Set<String> unknownLeaderTopics) {

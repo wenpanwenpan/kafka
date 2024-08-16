@@ -250,6 +250,8 @@ public class Sender implements Runnable {
         // okay we stopped accepting requests but there may still be
         // requests in the transaction manager, accumulator or waiting for acknowledgment,
         // wait until these are completed.
+        // sender线程即将退出运行，但是可能还会有事务管理器或累加器工作还未完成或者还有待server端回复的请求，所以在这里需要再次调用runOnce
+        // 进行等待，直到完成
         while (!forceClose && ((this.accumulator.hasUndrained() || this.client.inFlightRequestCount() > 0) || hasPendingTransactionalRequests())) {
             try {
                 runOnce();
@@ -258,6 +260,7 @@ public class Sender implements Runnable {
             }
         }
 
+        // sender线程退出前进行事务处理
         // Abort the transaction if any commit or abort didn't go through the transaction manager's queue
         while (!forceClose && transactionManager != null && transactionManager.hasOngoingTransaction()) {
             if (!transactionManager.isCompleting()) {
@@ -292,7 +295,8 @@ public class Sender implements Runnable {
 
     /**
      * Run a single iteration of sending
-     *
+     * 这个方法就是sender线程的关键了，主要做的事儿如下：
+     * 1、
      */
     void runOnce() {
         // 事务相关的逻辑
@@ -324,7 +328,8 @@ public class Sender implements Runnable {
         }
 
         long currentTimeMs = time.milliseconds();
-        // 创建发送到kafka集群的请求
+        // 创建发送到kafka集群的请求（这里仅会将消息写入到kafka channel 的send属性上并关注socketChannel的可写事件，
+        // 下面的poll才是感知到socketChannel有可写的空间时，真实将数据写入到socketChannel的地方）
         long pollTimeout = sendProducerData(currentTimeMs);
         // 真正执行网络io的地方，会将请求发送出去，并处理接收到的响应
         client.poll(pollTimeout, currentTimeMs);
@@ -359,7 +364,10 @@ public class Sender implements Runnable {
         long notReadyTimeout = Long.MAX_VALUE;
         while (iter.hasNext()) {
             Node node = iter.next();
-            // 尝试和该node建立连接（如果未建立连接的话）
+            // 尝试和该node建立连接（如果未建立连接的话），client.ready返回true表示之前就已经连接过了，返回false表示之前没连接过这是尝试进行第一次连接
+            // 这里想表达的意思就是检查下返回的 result.readyNodes 里的每个节点，如果该节点之前已经建立过连接了那么就保留它，如果之前
+            // 没有建立过连接，那么就尝试去连接他，但是本次并不会用它，所以要从集合里remove掉
+            // 连接成功后会将该channel注册到 nioSelector 上，并关注读写事件
             if (!this.client.ready(node, now)) {
                 iter.remove();
                 notReadyTimeout = Math.min(notReadyTimeout, this.client.pollDelayMs(node, now));
@@ -367,6 +375,7 @@ public class Sender implements Runnable {
         }
 
         // create produce requests
+        // 从 accumulator 中取出待发送的消息，key：是nodeId，value：是待发送给该node的批量消息集合
         Map<Integer, List<ProducerBatch>> batches = this.accumulator.drain(cluster, result.readyNodes, this.maxRequestSize, now);
         addToInflightBatches(batches);
         if (guaranteeMessageOrder) {
@@ -379,6 +388,7 @@ public class Sender implements Runnable {
 
         accumulator.resetNextBatchExpiryTime();
         List<ProducerBatch> expiredInflightBatches = getExpiredInflightBatches(now);
+        // 取出已经达到发送事件的消息
         List<ProducerBatch> expiredBatches = this.accumulator.expiredBatches(now);
         expiredBatches.addAll(expiredInflightBatches);
 
@@ -414,6 +424,7 @@ public class Sender implements Runnable {
             // otherwise the select time will be the time difference between now and the metadata expiry time;
             pollTimeout = 0;
         }
+        // 将消息发送出去（写入到kafka channel 的send属性上，待socketChannel有可写空间时再写入socketChannel进行发送）
         sendProduceRequests(batches, now);
         return pollTimeout;
     }
@@ -742,8 +753,9 @@ public class Sender implements Runnable {
             if (batch.magic() < minUsedMagic)
                 minUsedMagic = batch.magic();
         }
-
+        // 遍历每批待发送的消息（一个ProducerBatch里其实是包含了多条消息的）
         for (ProducerBatch batch : batches) {
+            // 这批消息要发送给哪个topic的哪个分区
             TopicPartition tp = batch.topicPartition;
             MemoryRecords records = batch.records();
 
@@ -764,13 +776,17 @@ public class Sender implements Runnable {
         if (transactionManager != null && transactionManager.isTransactional()) {
             transactionalId = transactionManager.transactionalId();
         }
+        // 请求消息构建器
         ProduceRequest.Builder requestBuilder = ProduceRequest.Builder.forMagic(minUsedMagic, acks, timeout,
                 produceRecordsByPartition, transactionalId);
+        // 请求发送到server端后，如果server端响应，那么处理响应的回调喊出
         RequestCompletionHandler callback = response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
 
         String nodeId = Integer.toString(destination);
+        // 创建请求对象
         ClientRequest clientRequest = client.newClientRequest(nodeId, requestBuilder, now, acks != 0,
                 requestTimeoutMs, callback);
+        // 将请求发送出去
         client.send(clientRequest, now);
         log.trace("Sent produce request to {}: {}", nodeId, requestBuilder);
     }

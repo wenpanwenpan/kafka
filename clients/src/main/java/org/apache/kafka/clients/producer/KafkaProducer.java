@@ -466,6 +466,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     // visible for testing
     Sender newSender(LogContext logContext, KafkaClient kafkaClient, ProducerMetadata metadata) {
         int maxInflightRequests = configureInflightRequests(producerConfig);
+        // 请求超时时间
         int requestTimeoutMs = producerConfig.getInt(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG);
         ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(producerConfig, time, logContext);
         ProducerMetrics metricsRegistry = new ProducerMetrics(this.metrics);
@@ -574,6 +575,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     }
 
     private static short configureAcks(ProducerConfig config, Logger log) {
+        // 用户指定了通信时ack方式
         boolean userConfiguredAcks = config.originals().containsKey(ProducerConfig.ACKS_CONFIG);
         short acks = Short.parseShort(config.getString(ProducerConfig.ACKS_CONFIG));
 

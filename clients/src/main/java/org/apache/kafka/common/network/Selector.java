@@ -261,7 +261,7 @@ public class Selector implements Selectable, AutoCloseable {
      */
     @Override
     public void connect(String id, InetSocketAddress address, int sendBufferSize, int receiveBufferSize) throws IOException {
-        // 1、首先确认是否已经被连接过
+        // 1、首先确认是否已经被连接过，已连接过直接抛出异常
         ensureNotRegistered(id);
         // 2、打开一个socket连接（创建连接）
         SocketChannel socketChannel = SocketChannel.open();
@@ -269,7 +269,7 @@ public class Selector implements Selectable, AutoCloseable {
         try {
             // 3、配置 socketChannel的属性
             configureSocketChannel(socketChannel, sendBufferSize, receiveBufferSize);
-            // 4、尝试发起连接
+            // 4、尝试发起连接（非阻塞的）
             boolean connected = doConnect(socketChannel, address);
             // 5、将该 socketChannel 注册到 NIOSelector 上，并关注 OP_CONNECT 事件
             key = registerChannel(id, socketChannel, SelectionKey.OP_CONNECT);
@@ -278,6 +278,8 @@ public class Selector implements Selectable, AutoCloseable {
                 // OP_CONNECT won't trigger for immediately connected channels
                 log.debug("Immediately connected to node {}", id);
                 // 将该key加入集合并取消对 OP_CONNECT 事件的监听（连接成功了就没必要监听 OP_CONNECT 事件了）
+                // 后续kafka sender线程里的selector会处理该集合(将该集合里的连接成功的channel记录到卡夫卡 Selector#connected 集合中进行管理)
+                // @see org.apache.kafka.common.network.Selector.pollSelectionKeys
                 immediatelyConnectedKeys.add(key);
                 key.interestOps(0);
             }
@@ -433,6 +435,8 @@ public class Selector implements Selectable, AutoCloseable {
         } else {
             try {
                 // 4、暂存数据预发送，并没有真正的发送，一次只能发送一个（如果上一个消息未发送完成这里就会报错）
+                // 这里其实只是将待发送的消息buffer写入到了kafka channel的send属性上并向对应的socketChannel上注册了一个可写事件
+                // 一旦该socketChannel有可写的空间就会通知selector将send消息写入
                 channel.setSend(send);
             } catch (Exception e) {
                 // 5、更新 KafkaChannel 的状态为发送失败
@@ -491,6 +495,7 @@ public class Selector implements Selectable, AutoCloseable {
 
         boolean dataInBuffers = !keysWithBufferedRead.isEmpty();
 
+        // 如果有链接建立成功了，或者缓存里有数据待处理，则设置超时时间为0，表示selector需要立即返回（非阻塞）
         if (!immediatelyConnectedKeys.isEmpty() || (madeReadProgressLastCall && dataInBuffers))
             timeout = 0;
 
@@ -703,7 +708,7 @@ public class Selector implements Selectable, AutoCloseable {
     }
 
     private void attemptWrite(SelectionKey key, KafkaChannel channel, long nowNanos) throws IOException {
-        // 该channel有待发送的buffer数据并且channel准备好了并且channel是可写的
+        // 该channel有待发送的buffer数据并且channel准备好了并且socketChannel是可写的
         if (channel.hasSend()
                 && channel.ready()
                 && key.isWritable()

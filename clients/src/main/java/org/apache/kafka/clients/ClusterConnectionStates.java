@@ -34,6 +34,7 @@ import java.util.Map;
 
 /**
  * The state of our connection to each node in the cluster.
+ * 集群连接状态管理：管理了producer和server端的node连接状态
  *
  */
 final class ClusterConnectionStates {
@@ -41,10 +42,13 @@ final class ClusterConnectionStates {
     final static double RECONNECT_BACKOFF_JITTER = 0.2;
     final static int CONNECTION_SETUP_TIMEOUT_EXP_BASE = 2;
     final static double CONNECTION_SETUP_TIMEOUT_JITTER = 0.2;
+    // 节点的状态集合（key：节点的ID，value：节点的连接状态）
     private final Map<String, NodeConnectionState> nodeState;
     private final Logger log;
     private final HostResolver hostResolver;
+    // 连接中的节点ID集合
     private Set<String> connectingNodes;
+    // 重连时间间隔
     private ExponentialBackoff reconnectBackoff;
     private ExponentialBackoff connectionSetupTimeout;
 
@@ -75,10 +79,13 @@ final class ClusterConnectionStates {
      * @return true if we can initiate a new connection
      */
     public boolean canConnect(String id, long now) {
+        // 获取该节点的连接状态
         NodeConnectionState state = nodeState.get(id);
+        // 如果连接状态是空，则说明该节点未连接过，返回true可以进行连接
         if (state == null)
             return true;
         else
+            // 该节点的状态是连接断开并且 上次尝试连接的时间 ~ 当前时间已经超过了节点的重连时间间隔，则运行再次进行连接
             return state.state.isDisconnected() &&
                    now - state.lastConnectAttemptMs >= state.reconnectBackoffMs;
     }
@@ -144,6 +151,7 @@ final class ClusterConnectionStates {
      */
     public void connecting(String id, long now, String host, ClientDnsLookup clientDnsLookup) {
         NodeConnectionState connectionState = nodeState.get(id);
+        // 不为空则说明之前尝试和该节点连接过，connectionState.host().equals(host) 表示上次与该节点连接的host和本次一致
         if (connectionState != null && connectionState.host().equals(host)) {
             connectionState.lastConnectAttemptMs = now;
             connectionState.state = ConnectionState.CONNECTING;
@@ -157,9 +165,11 @@ final class ClusterConnectionStates {
 
         // Create a new NodeConnectionState if nodeState does not already contain one
         // for the specified id or if the hostname associated with the node id changed.
+        // 将节点的连接状态维护到map中
         nodeState.put(id, new NodeConnectionState(ConnectionState.CONNECTING, now,
                 reconnectBackoff.backoff(0), connectionSetupTimeout.backoff(0), host,
                 clientDnsLookup, hostResolver));
+        // 将该节点保存到连接中的节点集合
         connectingNodes.add(id);
     }
 
@@ -178,9 +188,13 @@ final class ClusterConnectionStates {
      * @param now the current time in ms
      */
     public void disconnected(String id, long now) {
+        // 获取该节点的连接状态
         NodeConnectionState nodeState = nodeState(id);
+        // 最近一次尝试连接的时间修改为当前时间
         nodeState.lastConnectAttemptMs = now;
+        // 更新重连失败
         updateReconnectBackoff(nodeState);
+        // 如果该节点的状态是连接中，则更新该节点为连接失败，并冲连接中的节点集合里移除
         if (nodeState.state == ConnectionState.CONNECTING) {
             updateConnectionSetupTimeout(nodeState);
             connectingNodes.remove(id);
@@ -364,7 +378,9 @@ final class ClusterConnectionStates {
      * @param nodeState The node state object to update
      */
     private void updateReconnectBackoff(NodeConnectionState nodeState) {
+        // 下次重连需要等待多久才运行进行重连
         nodeState.reconnectBackoffMs = reconnectBackoff.backoff(nodeState.failedAttempts);
+        // 连接失败次数
         nodeState.failedAttempts++;
     }
 
@@ -406,6 +422,7 @@ final class ClusterConnectionStates {
      * @param id the connection to fetch the state for
      */
     private NodeConnectionState nodeState(String id) {
+        // 获取节点的连接状态
         NodeConnectionState state = this.nodeState.get(id);
         if (state == null)
             throw new IllegalStateException("No entry found for connection " + id);
@@ -465,18 +482,21 @@ final class ClusterConnectionStates {
      * The state of our connection to a node.
      */
     private static class NodeConnectionState {
-
+        // 连接状态
         ConnectionState state;
         AuthenticationException authenticationException;
         long lastConnectAttemptMs;
+        // 连接失败次数
         long failedAttempts;
         long failedConnectAttempts;
+        // 连接失败后重连时间间隔
         long reconnectBackoffMs;
         long connectionSetupTimeoutMs;
         // Connection is being throttled if current time < throttleUntilTimeMs.
         long throttleUntilTimeMs;
         private List<InetAddress> addresses;
         private int addressIndex;
+        // 连接的目标主机 host
         private final String host;
         private final ClientDnsLookup clientDnsLookup;
         private final HostResolver hostResolver;

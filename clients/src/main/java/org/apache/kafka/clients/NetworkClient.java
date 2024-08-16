@@ -308,7 +308,7 @@ public class NetworkClient implements KafkaClient {
         // 如果该节点已经建立好连接了就直接返回
         if (isReady(node, now))
             return true;
-
+        // 该节点是否能进行连接（节点未连接过或该节点掉线了可进行重连）
         if (connectionStates.canConnect(node.idString(), now))
             // if we are interested in sending to a node and we don't have a connection to it, initiate one
             // 和node立即建立连接
@@ -462,6 +462,7 @@ public class NetworkClient implements KafkaClient {
      */
     @Override
     public void send(ClientRequest request, long now) {
+        // 消息发送
         doSend(request, false, now);
     }
 
@@ -473,7 +474,9 @@ public class NetworkClient implements KafkaClient {
 
     private void doSend(ClientRequest clientRequest, boolean isInternalRequest, long now) {
         ensureActive();
+        // 获取该消息要发送给那个node
         String nodeId = clientRequest.destination();
+        // 外部请求
         if (!isInternalRequest) {
             // If this request came from outside the NetworkClient, validate
             // that we can send data.  If the request is internal, we trust
@@ -502,6 +505,7 @@ public class NetworkClient implements KafkaClient {
             }
             // The call to build may also throw UnsupportedVersionException, if there are essential
             // fields that cannot be represented in the chosen version.
+            // 实际发送消息的地方（将消息赋值到kafka channel 的send属性上，并关注对应socketChannel的可写事件）
             doSend(clientRequest, isInternalRequest, now, builder.build(version));
         } catch (UnsupportedVersionException unsupportedVersionException) {
             // If the version is not supported, skip sending the request over the wire.
@@ -520,12 +524,14 @@ public class NetworkClient implements KafkaClient {
     }
 
     private void doSend(ClientRequest clientRequest, boolean isInternalRequest, long now, AbstractRequest request) {
+        // 消息要发送到哪个node
         String destination = clientRequest.destination();
         RequestHeader header = clientRequest.makeHeader(request.version());
         if (log.isDebugEnabled()) {
             log.debug("Sending {} request with header {} and timeout {} to node {}: {}",
                 clientRequest.apiKey(), header, clientRequest.requestTimeoutMs(), destination, request);
         }
+        // 将要发送的消息变成一个buffer（send）
         Send send = request.toSend(destination, header);
         InFlightRequest inFlightRequest = new InFlightRequest(
                 clientRequest,
@@ -535,6 +541,7 @@ public class NetworkClient implements KafkaClient {
                 send,
                 now);
         this.inFlightRequests.add(inFlightRequest);
+        // 调用 kafka 的selector进行发送（这里仅会将消息赋值到kafka channel的send属性并关注socketChannel可写事件）
         selector.send(send);
     }
 
@@ -551,6 +558,7 @@ public class NetworkClient implements KafkaClient {
     public List<ClientResponse> poll(long timeout, long now) {
         ensureActive(); // 确认连接是活着的
 
+        // 如果有发送失败的消息，则将发送失败的消息都转移到 responses 集合并逐一回调他们的发送失败接口
         if (!abortedSends.isEmpty()) {
             // If there are aborted sends because of unsupported version exceptions or disconnects,
             // handle them immediately without waiting for Selector#poll.
@@ -562,7 +570,7 @@ public class NetworkClient implements KafkaClient {
         // 尝试更新元数据
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
         try {
-            // 执行io操作（就是在这里进行的感知有读写事件发生的channel连接）
+            // 【核心代码】执行io操作（就是在这里进行的感知有读写事件发生的channel连接），这里三个超时时间取最小
             this.selector.poll(Utils.min(timeout, metadataTimeout, defaultRequestTimeoutMs));
         } catch (IOException e) {
             log.error("Unexpected error during I/O", e);
@@ -1009,17 +1017,19 @@ public class NetworkClient implements KafkaClient {
     private void initiateConnect(Node node, long now) {
         String nodeConnectionId = node.idString();
         try {
+            // 和节点进行连接（这里并没有真正发起连接，而是保存了一下networkClient和该节点的连接状态）
             connectionStates.connecting(nodeConnectionId, now, node.host(), clientDnsLookup);
+            // 获取连接节点的地址
             InetAddress address = connectionStates.currentAddress(nodeConnectionId);
             log.debug("Initiating connection to node {} using address {}", node, address);
-            // 通过selector来和node建立连接
+            // 通过selector来和node建立连接（真正建立连接的地方）
             selector.connect(nodeConnectionId,
                     new InetSocketAddress(address, node.port()),
                     this.socketSendBuffer,
                     this.socketReceiveBuffer);
         } catch (IOException e) {
             log.warn("Error connecting to node {}", node, e);
-            // Attempt failed, we'll try again after the backoff
+            // Attempt failed, we'll try again after the backoff，一旦有异常发送则断开连接
             connectionStates.disconnected(nodeConnectionId, now);
             // Notify metadata updater of the connection failure
             metadataUpdater.handleServerDisconnect(now, nodeConnectionId, Optional.empty());
@@ -1081,6 +1091,7 @@ public class NetworkClient implements KafkaClient {
 
         @Override
         public void handleServerDisconnect(long now, String destinationId, Optional<AuthenticationException> maybeFatalException) {
+            // 获取集群信息元数据
             Cluster cluster = metadata.fetch();
             // 'processDisconnection' generates warnings for misconfigured bootstrap server configuration
             // resulting in 'Connection Refused' and misconfigured security resulting in authentication failures.
@@ -1097,10 +1108,11 @@ public class NetworkClient implements KafkaClient {
             // so that we can backoff properly
             if (isUpdateDue(now))
                 handleFailedRequest(now, Optional.empty());
-
+            // 如果有异常发生，则唤醒在等待元数据更新完成的所有线程
             maybeFatalException.ifPresent(metadata::fatalError);
 
             // The disconnect may be the result of stale metadata, so request an update
+            // 全量更新元数据
             metadata.requestUpdate();
         }
 

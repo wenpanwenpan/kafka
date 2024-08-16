@@ -45,6 +45,7 @@ public class KafkaThread extends Thread {
     }
 
     private void configureThread(final String name, boolean daemon) {
+        // 设置为后台线程
         setDaemon(daemon);
         setUncaughtExceptionHandler((t, e) -> log.error("Uncaught exception in thread '{}':", name, e));
     }
