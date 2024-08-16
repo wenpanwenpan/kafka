@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class InFlightRequests {
 
     private final int maxInFlightRequestsPerConnection;
+    // key：nodeID，value：待发送给该node的请求或等待该node返回结果的请求队列
     private final Map<String, Deque<NetworkClient.InFlightRequest>> requests = new HashMap<>();
     /** Thread safe total number of in flight requests. */
     private final AtomicInteger inFlightRequestCount = new AtomicInteger(0);
@@ -41,6 +42,7 @@ final class InFlightRequests {
 
     /**
      * Add the given request to the queue for the connection it was directed to
+     * 添加request到待发送或待server端响应的map集合
      */
     public void add(NetworkClient.InFlightRequest request) {
         String destination = request.destination;
@@ -57,6 +59,7 @@ final class InFlightRequests {
      * Get the request queue for the given node
      */
     private Deque<NetworkClient.InFlightRequest> requestQueue(String node) {
+        // 获取
         Deque<NetworkClient.InFlightRequest> reqs = requests.get(node);
         if (reqs == null || reqs.isEmpty())
             throw new IllegalStateException("There are no in-flight requests for node " + node);
