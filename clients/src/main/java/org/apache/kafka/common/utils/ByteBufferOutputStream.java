@@ -31,6 +31,7 @@ import java.nio.ByteBuffer;
  * Hard to track bugs can happen when this class is used for the second reason and unexpected buffer expansion happens.
  * So, it's best to assume that buffer expansion can always happen. An improvement would be to create a separate class
  * that throws an error if buffer expansion is required to avoid the issue altogether.
+ * 对 OutputStream 的实现，实现了可自动对buffer扩容
  */
 public class ByteBufferOutputStream extends OutputStream {
 
@@ -38,6 +39,7 @@ public class ByteBufferOutputStream extends OutputStream {
 
     private final int initialCapacity;
     private final int initialPosition;
+    // 写出的数据就保存在该buffer里
     private ByteBuffer buffer;
 
     /**
@@ -113,20 +115,30 @@ public class ByteBufferOutputStream extends OutputStream {
      * @param remainingBytesRequired The number of bytes required
      */
     public void ensureRemaining(int remainingBytesRequired) {
+        // 需要的大小大于buffer剩余的大小就进行扩容
         if (remainingBytesRequired > buffer.remaining())
             expandBuffer(remainingBytesRequired);
     }
 
+    // 扩容 buffer
     private void expandBuffer(int remainingRequired) {
+        // 计算要扩容到多大
         int expandSize = Math.max((int) (buffer.limit() * REALLOCATION_FACTOR), buffer.position() + remainingRequired);
+        // 分配一个大小为 expandSize 的buffer内存
         ByteBuffer temp = ByteBuffer.allocate(expandSize);
+        // 获取写入上限
         int limit = limit();
+        // 反转一下，把该buffer变为读buffer
         buffer.flip();
+        // 将原buffer里的数据拷贝到扩容后的buffer里
         temp.put(buffer);
+        // 修改写模式的写入上线
         buffer.limit(limit);
         // reset the old buffer's position so that the partial data in the new buffer cannot be mistakenly consumed
         // we should ideally only do this for the original buffer, but the additional complexity doesn't seem worth it
+        // 更新原来buffer的position，防止被重复消费
         buffer.position(initialPosition);
+        // 将buffer赋值为扩容后的buffer
         buffer = temp;
     }
 

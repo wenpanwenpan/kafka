@@ -31,9 +31,13 @@ import java.util.concurrent.TimeUnit;
  */
 public class ProduceRequestResult {
 
+    // 通过 CountDownLatch 间接实现了future的功能
     private final CountDownLatch latch = new CountDownLatch(1);
+    // topic的分区
     private final TopicPartition topicPartition;
 
+    // 用来记录ProducerBatch中第一条消息在broker端分配的offset值，这样的话在 producerBatch 里的每一条消息就可以通过该offset计算出
+    // 这条消息存放在broker里的偏移量了（baseOffset + relativeOffset）
     private volatile Long baseOffset = null;
     private volatile long logAppendTime = RecordBatch.NO_TIMESTAMP;
     private volatile RuntimeException error;
@@ -62,10 +66,12 @@ public class ProduceRequestResult {
 
     /**
      * Mark this request as complete and unblock any threads waiting on its completion.
+     * 等到批次消息被发送到broker端并且broker端响应后会回调这个方法唤醒在该latch上等待的线程
      */
     public void done() {
         if (baseOffset == null)
             throw new IllegalStateException("The method `set` must be invoked before this method.");
+        // 将latch的数量-1，唤醒在该latch上等待的发送消息线程
         this.latch.countDown();
     }
 

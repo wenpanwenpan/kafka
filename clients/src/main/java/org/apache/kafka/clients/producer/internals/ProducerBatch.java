@@ -52,28 +52,43 @@ import static org.apache.kafka.common.record.RecordBatch.NO_TIMESTAMP;
  * A batch of records that is or will be sent.
  *
  * This class is not thread safe and external synchronization must be used when modifying it
+ * 一个 ProducerBatch 里会存放多条用户线程发送的消息
  */
 public final class ProducerBatch {
 
     private static final Logger log = LoggerFactory.getLogger(ProducerBatch.class);
 
+    // 批次的最终状态
     private enum FinalState { ABORTED, FAILED, SUCCEEDED }
 
+    // 该batch的创建时间
     final long createdMs;
+    // 该批次的消息要发送到哪个topic的哪个分区
     final TopicPartition topicPartition;
+    // 请求结果里的future
     final ProduceRequestResult produceFuture;
-
+    // 用来存储消息的callback和响应数据
     private final List<Thunk> thunks = new ArrayList<>();
+    // 【重要】批次里的消息就是存放在这的，MemoryRecordsBuilder 用于管理批次消息的写入（比如：该批次还剩多少空间可写）
     private final MemoryRecordsBuilder recordsBuilder;
+    // 重试次数
     private final AtomicInteger attempts = new AtomicInteger(0);
+    // 是否是被分裂的批次，比如：一个批次限制最大容纳16kb，假如用户发送了一个30kb的消息，那么就需要两个batch来存放
     private final boolean isSplitBatch;
+    // producerBatch的最终状态
     private final AtomicReference<FinalState> finalState = new AtomicReference<>(null);
 
+    // 写入该批次的消息数量
     int recordCount;
+    // 该批次里最大的消息大小
     int maxRecordSize;
+    // 最近一次重试发送该批次的时间戳
     private long lastAttemptMs;
+    // 最近一次向该批次添加消息的时间戳
     private long lastAppendTime;
+    // sender子线程最近一次从该批次里拉取消息的时间
     private long drainedMs;
+    // 是否正在重试，producerBatch里的数据发送失败了会自动重试进行发送
     private boolean retry;
     private boolean reopened;
 
@@ -101,13 +116,17 @@ public final class ProducerBatch {
      * @return The RecordSend corresponding to this record or null if there isn't sufficient room.
      */
     public FutureRecordMetadata tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers, Callback callback, long now) {
+        // 1、如果该批次已经没有足够的空间来容纳即将要写入的数据了，则返回null
         if (!recordsBuilder.hasRoomFor(timestamp, key, value, headers)) {
             return null;
         } else {
+            // 2、通过 recordsBuilder 往当前的producerBatch里继续添加消息
             Long checksum = this.recordsBuilder.append(timestamp, key, value, headers);
+            // 3、更新该批次最大消息的大小
             this.maxRecordSize = Math.max(this.maxRecordSize, AbstractRecords.estimateSizeInBytesUpperBound(magic(),
                     recordsBuilder.compressionType(), key, value, headers));
             this.lastAppendTime = now;
+            // 4、构建 FutureRecordMetadata 对象
             FutureRecordMetadata future = new FutureRecordMetadata(this.produceFuture, this.recordCount,
                                                                    timestamp, checksum,
                                                                    key == null ? -1 : key.length,
@@ -115,8 +134,10 @@ public final class ProducerBatch {
                                                                    Time.SYSTEM);
             // we have to keep every future returned to the users in case the batch needs to be
             // split to several new batches and resent.
+            // 5、将 FutureRecordMetadata 和callback封装到 thunks 集合中
             thunks.add(new Thunk(callback, future));
             this.recordCount++;
+            // 6、返回 FutureRecordMetadata
             return future;
         }
     }
@@ -124,6 +145,7 @@ public final class ProducerBatch {
     /**
      * This method is only used by {@link #split(int)} when splitting a large batch to smaller ones.
      * @return true if the record has been successfully appended, false otherwise.
+     * 添加分裂消息到批次里
      */
     private boolean tryAppendForSplit(long timestamp, ByteBuffer key, ByteBuffer value, Header[] headers, Thunk thunk) {
         if (!recordsBuilder.hasRoomFor(timestamp, key, value, headers)) {
@@ -183,8 +205,10 @@ public final class ProducerBatch {
      * @param logAppendTime The log append time or -1 if CreateTime is being used
      * @param exception The exception that occurred (or null if the request was successful)
      * @return true if the batch was completed successfully and false if the batch was previously aborted
+     * 当 批次消息发送给broker是正常的还是失败的还是发送超时或关闭生产者，都会回调这个方法
      */
     public boolean done(long baseOffset, long logAppendTime, RuntimeException exception) {
+        // 1、根据 exception 来决定本次batch发送的最终状态
         final FinalState tryFinalState = (exception == null) ? FinalState.SUCCEEDED : FinalState.FAILED;
 
         if (tryFinalState == FinalState.SUCCEEDED) {
@@ -193,7 +217,9 @@ public final class ProducerBatch {
             log.trace("Failed to produce messages to {} with base offset {}.", topicPartition, baseOffset, exception);
         }
 
+        // 2、通过CAS来更新该批次的最终状态，只有一次能更新成功，所以回调函数也只会被执行一次
         if (this.finalState.compareAndSet(null, tryFinalState)) {
+            // 3、执行回调函数（比如：用户线程调用producer进行异步发送消息，然后注册了一个回调函数，那么这个回调函数就是在这里被回调的）
             completeFutureAndFireCallbacks(baseOffset, logAppendTime, exception);
             return true;
         }
@@ -217,17 +243,22 @@ public final class ProducerBatch {
 
     private void completeFutureAndFireCallbacks(long baseOffset, long logAppendTime, RuntimeException exception) {
         // Set the future before invoking the callbacks as we rely on its state for the `onCompletion` call
+        // 1、更新 ProduceRequestResult 里相关字段
         produceFuture.set(baseOffset, logAppendTime, exception);
 
         // execute callbacks
+        // 2、遍历 thunks集合，调用每个record的回调函数，这里生产者发送的每条消息发送结果就会回调给发送方
         for (Thunk thunk : thunks) {
             try {
                 if (exception == null) {
+                    // 3、获取消息元数据
                     RecordMetadata metadata = thunk.future.value();
                     if (thunk.callback != null)
+                        // 4、发送成功回调
                         thunk.callback.onCompletion(metadata, null);
                 } else {
                     if (thunk.callback != null)
+                        // 5、发送失败回调
                         thunk.callback.onCompletion(null, exception);
                 }
             } catch (Exception e) {
@@ -235,6 +266,7 @@ public final class ProducerBatch {
             }
         }
 
+        // 唤醒阻塞在 ProducerBatch上的主线程
         produceFuture.done();
     }
 

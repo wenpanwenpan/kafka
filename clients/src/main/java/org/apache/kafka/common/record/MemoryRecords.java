@@ -43,7 +43,7 @@ import java.util.Objects;
 public class MemoryRecords extends AbstractRecords {
     private static final Logger log = LoggerFactory.getLogger(MemoryRecords.class);
     public static final MemoryRecords EMPTY = MemoryRecords.readableRecords(ByteBuffer.allocate(0));
-
+    // 用户消息真实存储的地方
     private final ByteBuffer buffer;
 
     private final Iterable<MutableRecordBatch> batches = this::batchIterator;
@@ -431,10 +431,10 @@ public class MemoryRecords extends AbstractRecords {
     }
 
     public static MemoryRecordsBuilder builder(ByteBuffer buffer,
-                                               byte magic,
-                                               CompressionType compressionType,
-                                               TimestampType timestampType,
-                                               long baseOffset,
+                                               byte magic, // 消息版本
+                                               CompressionType compressionType, // 消息压缩类型
+                                               TimestampType timestampType, // 时间戳
+                                               long baseOffset, // 基本位移
                                                long logAppendTime) {
         return builder(buffer, magic, compressionType, timestampType, baseOffset, logAppendTime,
                 RecordBatch.NO_PRODUCER_ID, RecordBatch.NO_PRODUCER_EPOCH, RecordBatch.NO_SEQUENCE, false,
@@ -491,14 +491,14 @@ public class MemoryRecords extends AbstractRecords {
     }
 
     public static MemoryRecordsBuilder builder(ByteBuffer buffer,
-                                               byte magic,
-                                               CompressionType compressionType,
-                                               TimestampType timestampType,
-                                               long baseOffset,
-                                               long logAppendTime,
-                                               long producerId,
-                                               short producerEpoch,
-                                               int baseSequence,
+                                               byte magic, // 消息版本
+                                               CompressionType compressionType, // 消息压缩类型
+                                               TimestampType timestampType, // 时间戳
+                                               long baseOffset, // 基本位移
+                                               long logAppendTime, // 日志追加时间
+                                               long producerId, // 生产者ID
+                                               short producerEpoch, // 生产者版本
+                                               int baseSequence, // 批次序列号
                                                boolean isTransactional,
                                                int partitionLeaderEpoch) {
         return builder(buffer, magic, compressionType, timestampType, baseOffset,
@@ -515,7 +515,8 @@ public class MemoryRecords extends AbstractRecords {
                                                short producerEpoch,
                                                int baseSequence,
                                                boolean isTransactional,
-                                               boolean isControlBatch,
+                                               boolean isControlBatch, // 是否控制类的批次
+                                               // 分区leader的版本
                                                int partitionLeaderEpoch) {
         return new MemoryRecordsBuilder(buffer, magic, compressionType, timestampType, baseOffset,
                 logAppendTime, producerId, producerEpoch, baseSequence, isTransactional, isControlBatch, partitionLeaderEpoch,

@@ -25,9 +25,11 @@ import java.util.concurrent.ConcurrentMap;
 
 /**
  * A simple read-optimized map implementation that synchronizes only writes and does a full copy on each modification
+ * 可以看到该map里的修改map集合里的内容的相关方法都是加了锁的
  */
 public class CopyOnWriteMap<K, V> implements ConcurrentMap<K, V> {
 
+    // 可以看到这里就是一个用 volatile 修饰的map，说白了CopyOnWriteMap就是对map进行了包装
     private volatile Map<K, V> map;
 
     public CopyOnWriteMap() {
@@ -55,6 +57,7 @@ public class CopyOnWriteMap<K, V> implements ConcurrentMap<K, V> {
 
     @Override
     public V get(Object k) {
+        // 读操作，直接操作原map即可
         return map.get(k);
     }
 
@@ -85,29 +88,39 @@ public class CopyOnWriteMap<K, V> implements ConcurrentMap<K, V> {
 
     @Override
     public synchronized V put(K k, V v) {
+        // 往该map里添加数据的时候是将原来的数据拷贝一份
         Map<K, V> copy = new HashMap<K, V>(this.map);
+        // 将要添加的数据写到拷贝后的map里
         V prev = copy.put(k, v);
+        // 用copy后的map替换原来的map
         this.map = Collections.unmodifiableMap(copy);
         return prev;
     }
 
     @Override
     public synchronized void putAll(Map<? extends K, ? extends V> entries) {
+        // 先拷贝
         Map<K, V> copy = new HashMap<K, V>(this.map);
+        // 添加到拷贝的集合里
         copy.putAll(entries);
+        // 替换为拷贝后的map
         this.map = Collections.unmodifiableMap(copy);
     }
 
     @Override
     public synchronized V remove(Object key) {
+        // 移除动作，也是先拷贝一份
         Map<K, V> copy = new HashMap<K, V>(this.map);
+        // 拷贝后的结果进行移除
         V prev = copy.remove(key);
+        // 替换
         this.map = Collections.unmodifiableMap(copy);
         return prev;
     }
 
     @Override
     public synchronized V putIfAbsent(K k, V v) {
+        // 如果不存在说明要新写入了
         if (!containsKey(k))
             return put(k, v);
         else

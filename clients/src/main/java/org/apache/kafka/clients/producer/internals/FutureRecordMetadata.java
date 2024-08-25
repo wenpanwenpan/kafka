@@ -29,11 +29,16 @@ import java.util.concurrent.TimeoutException;
  */
 public final class FutureRecordMetadata implements Future<RecordMetadata> {
 
+    // 发送请求结果对象
     private final ProduceRequestResult result;
+    // 发送的消息在ProducerBatch中的相对偏移量
     private final long relativeOffset;
+    // 创建该对象的时间戳
     private final long createTimestamp;
     private final Long checksum;
+    // 待发送消息序列化key的大小
     private final int serializedKeySize;
+    // 待发送消息序列化value的大小
     private final int serializedValueSize;
     private final Time time;
     private volatile FutureRecordMetadata nextRecordMetadata = null;
@@ -61,6 +66,7 @@ public final class FutureRecordMetadata implements Future<RecordMetadata> {
 
     @Override
     public RecordMetadata get() throws InterruptedException, ExecutionException {
+        // 如果该批次的数据还没有放到broker或broker还未响应，则阻塞等待
         this.result.await();
         if (nextRecordMetadata != null)
             return nextRecordMetadata.get();
@@ -94,6 +100,7 @@ public final class FutureRecordMetadata implements Future<RecordMetadata> {
     }
 
     RecordMetadata valueOrError() throws ExecutionException {
+        // 发送失败了
         if (this.result.error() != null)
             throw new ExecutionException(this.result.error());
         else
@@ -107,6 +114,7 @@ public final class FutureRecordMetadata implements Future<RecordMetadata> {
     RecordMetadata value() {
         if (nextRecordMetadata != null)
             return nextRecordMetadata.value();
+        // 将 partition、baseOffset、relativeOffset 等封装为一个对象返回
         return new RecordMetadata(result.topicPartition(), this.result.baseOffset(), this.relativeOffset,
                                   timestamp(), this.checksum, this.serializedKeySize, this.serializedValueSize);
     }

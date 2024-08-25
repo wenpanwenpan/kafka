@@ -62,6 +62,8 @@ import org.slf4j.Logger;
  * <p>
  * The accumulator uses a bounded amount of memory and append calls will block when that memory is exhausted, unless
  * this behavior is explicitly disabled.
+ * 一个或多个用户线程会调用producer#send()方法往 RecordAccumulator 里写入待发送的数据，sender线程会从 RecordAccumulator 里读取数据
+ * 所以 RecordAccumulator 必须要保证线程安全
  */
 public final class RecordAccumulator {
 
@@ -74,12 +76,17 @@ public final class RecordAccumulator {
     private final int lingerMs;
     private final long retryBackoffMs;
     private final int deliveryTimeoutMs;
+    // 【重要】内存池，频繁的创建和释放ProducerBatch容易造成full gc，kafka 使用 BufferPool 来解决了这个问题，每个 ProducerBatch 底层都对应了
+    // 一块内存空间，这个内存空间就是专门用来存放用户发送的消息的，用完归还就行
     private final BufferPool free;
     private final Time time;
     private final ApiVersions apiVersions;
+    // key: topic的某个分区，value：发往该分区的ProducerBatch双端队列。通过 ProducerBatch 缓存数据，减少了full gc
+    // 注意：这是一个写时复制的 map @see CopyOnWriteMap，生产消息时分区是很少变动的，大多数情况都是对该map里的队列进行读操作，所以这是一个典型的读多写少的map
     private final ConcurrentMap<TopicPartition, Deque<ProducerBatch>> batches;
     private final IncompleteBatches incomplete;
     // The following variables are only accessed by the sender thread, so we don't need to protect them.
+    // 顺序消息用的
     private final Set<TopicPartition> muted;
     private int drainIndex;
     private final TransactionManager transactionManager;
@@ -193,11 +200,14 @@ public final class RecordAccumulator {
         if (headers == null) headers = Record.EMPTY_HEADERS;
         try {
             // check if we have an in-progress batch
+            // 获取发送到该分区的双端队列
             Deque<ProducerBatch> dq = getOrCreateDeque(tp);
             synchronized (dq) {
                 if (closed)
                     throw new KafkaException("Producer closed while send in progress");
+                // 尝试写入
                 RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq, nowMs);
+                // 如果写入成功，则直接返回
                 if (appendResult != null)
                     return appendResult;
             }
@@ -211,31 +221,42 @@ public final class RecordAccumulator {
             byte maxUsableMagic = apiVersions.maxUsableProduceMagic();
             int size = Math.max(this.batchSize, AbstractRecords.estimateSizeInBytesUpperBound(maxUsableMagic, compression, key, value, headers));
             log.trace("Allocating a new {} byte message buffer for topic {} partition {} with remaining timeout {}ms", size, tp.topic(), tp.partition(), maxTimeToBlock);
+            // 从内存池分配一个大小为size的buffer
             buffer = free.allocate(size, maxTimeToBlock);
 
             // Update the current time in case the buffer allocation blocked above.
             nowMs = time.milliseconds();
+            // 加同步锁
             synchronized (dq) {
                 // Need to check if producer is closed again after grabbing the dequeue lock.
                 if (closed)
                     throw new KafkaException("Producer closed while send in progress");
-
+                // 加锁后再次尝试写入 producerBatch，上面不是判断到了队列里最后一个producerBatch没有可写空间了吗，为什么这里还要再次尝试写入队列尾部的producerBatch？
+                // 这是一个并发控制，因为可能会有多个业务线程调用 producer进行发送消息，那么就会有并发问题，比如：A、B两个线程都调用了producer进行发送消息，
+                // A、B线程在上面尝试写入失败后都会去创建buffer，加入A线程先创建buffer成功，并且已经将消息写入到buffer里并包装为 ProducerBatch 并且放入双端队列里了
+                // 那么B线程获取到锁后再次创建一个 producerBatch 并放入双端队列，就会导致A线程创建的双端队列无法继续写入消息了
                 RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq, nowMs);
+                // 写成功了，直接返回
                 if (appendResult != null) {
                     // Somebody else found us a batch, return the one we waited for! Hopefully this doesn't happen often...
                     return appendResult;
                 }
 
+                // 创建一个builder，用于对消息写入 producerBatch进行封装管理
                 MemoryRecordsBuilder recordsBuilder = recordsBuilder(buffer, maxUsableMagic);
+                // 创建一个消息批次
                 ProducerBatch batch = new ProducerBatch(tp, recordsBuilder, nowMs);
+                //尝试向刚创建的消息批次里写入消息（这里一定能写成功，因为这个批次刚刚创建，没有写入任何消息）
                 FutureRecordMetadata future = Objects.requireNonNull(batch.tryAppend(timestamp, key, value, headers,
                         callback, nowMs));
 
+                // 将新创建的批次加入双端队列的尾部
                 dq.addLast(batch);
                 incomplete.add(batch);
 
                 // Don't deallocate this buffer in the finally block as it's being used in the record batch
                 buffer = null;
+                // 返回消息写入的结果
                 return new RecordAppendResult(future, dq.size() > 1 || batch.isFull(), true, false);
             }
         } finally {
@@ -263,12 +284,16 @@ public final class RecordAccumulator {
      */
     private RecordAppendResult tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers,
                                          Callback callback, Deque<ProducerBatch> deque, long nowMs) {
+        // 取出队列的最后一个批次
         ProducerBatch last = deque.peekLast();
         if (last != null) {
+            // 尝试将该消息添加到队列里的最后一个批次里，如果写入不成功则返回null
             FutureRecordMetadata future = last.tryAppend(timestamp, key, value, headers, callback, nowMs);
             if (future == null)
+                // 说明该批次已经写满了，close it
                 last.closeForRecordAppends();
             else
+                // 写入成功，则返回写入的结果（future）
                 return new RecordAppendResult(future, deque.size() > 1 || last.isFull(), false, false);
         }
         return null;

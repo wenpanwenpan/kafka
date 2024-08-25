@@ -40,9 +40,11 @@ import static org.apache.kafka.common.utils.Utils.wrapNullable;
  * In cases where keeping memory retention low is important and there's a gap between the time that record appends stop
  * and the builder is closed (e.g. the Producer), it's important to call `closeForRecordAppends` when the former happens.
  * This will release resources like compression buffers that can be relatively large (64 KB for LZ4).
+ * MemoryRecordsBuilder 用于管理一个批次里的消息，比如该批次是否还能写入，写了多少消息以及继续往该批次里追加消息
  */
 public class MemoryRecordsBuilder implements AutoCloseable {
     private static final float COMPRESSION_RATE_ESTIMATION_FACTOR = 1.05f;
+    // 写操作关闭的输出流，当一个batch写满后就会将 appendStream 赋值为 CLOSED_STREAM，此时如果还有用户线程想往该批次里追加消息就会报错
     private static final DataOutputStream CLOSED_STREAM = new DataOutputStream(new OutputStream() {
         @Override
         public void write(int b) {
@@ -50,39 +52,63 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         }
     });
 
+    // 日志时间
     private final TimestampType timestampType;
+    // 消息压缩类型
     private final CompressionType compressionType;
     // Used to hold a reference to the underlying ByteBuffer so that we can write the record batch header and access
     // the written bytes. ByteBufferOutputStream allocates a new ByteBuffer if the existing one is not large enough,
     // so it's not safe to hold a direct reference to the underlying ByteBuffer.
+    // kafka对outputStream的实现类，对byteBuffer实现了自动扩容的能力
     private final ByteBufferOutputStream bufferStream;
+    // 消息的版本
     private final byte magic;
+    // byteBuffer的最初始位置
     private final int initialPosition;
+    // 基本位移
     private final long baseOffset;
+    // 消息的追加时间
     private final long logAppendTime;
+    // 是否控制类的批次
     private final boolean isControlBatch;
+    // 分区leader的版本
     private final int partitionLeaderEpoch;
+    // 写入上限（也就是指定了一个producerBatch最多能写多少消息，如果写满了就需要将该producerBatch关闭并发送，不允许在写入了）
     private final int writeLimit;
+    // 批次的头大小字节数
     private final int batchHeaderSizeInBytes;
 
     // Use a conservative estimate of the compression ratio. The producer overrides this using statistics
-    // from previous batches before appending any records.
+    // from previous batches before appending any records. 预估压缩比
     private float estimatedCompressionRatio = 1.0F;
 
     // Used to append records, may compress data on the fly
+    // 对bufferStream添加压缩功能的输出流
     private DataOutputStream appendStream;
+    // 是否是事务批次
     private boolean isTransactional;
+    // 生产者ID
     private long producerId;
+    // 生产者版本
     private short producerEpoch;
+    // 批次序列号
     private int baseSequence;
+    // 压缩前要写入的消息体大小（字节）
     private int uncompressedRecordsSizeInBytes = 0; // Number of bytes (excluding the header) written before compression
+    // 压缩前写入的记录数（不包括头）
     private int numRecords = 0;
+    // 实际压缩率
     private float actualCompressionRatio = 1;
+    // 最大时间戳
     private long maxTimestamp = RecordBatch.NO_TIMESTAMP;
+    // 最大时间戳偏移量
     private long offsetOfMaxTimestamp = -1;
+    // 最后的偏移量（也就是batch中下一个能继续写入消息的位置）
     private Long lastOffset = null;
+    // 第一次追加消息的时间戳
     private Long firstTimestamp = null;
 
+    // 用于真正保存用户发送的消息的地方
     private MemoryRecords builtRecords;
     private boolean aborted = false;
 
@@ -110,6 +136,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
                 throw new IllegalArgumentException("ZStandard compression is not supported for magic " + magic);
         }
 
+        // 消息版本号 v0、v1、v2
         this.magic = magic;
         this.timestampType = timestampType;
         this.compressionType = compressionType;
@@ -126,11 +153,17 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         this.isControlBatch = isControlBatch;
         this.partitionLeaderEpoch = partitionLeaderEpoch;
         this.writeLimit = writeLimit;
+        // 初始位置
         this.initialPosition = bufferStream.position();
+        // 根据不同版本的消息计算该批次消息头的大小
         this.batchHeaderSizeInBytes = AbstractRecords.recordBatchHeaderSizeInBytes(magic, compressionType);
 
+        // 将bufferStream的position调整为 initialPosition + 批次头大小，用户发送的消息就可以直接写入 bufferStream 里了
         bufferStream.position(initialPosition + batchHeaderSizeInBytes);
         this.bufferStream = bufferStream;
+        // bufferStream 是对outputStream的实现，增加了自动扩容byteBuffer的能力，
+        // 然后又用compressionType.wrapForOutput 包装了 bufferStream，使得该输出流具有对写出数据的压缩能力
+        // 最后又用 DataOutputStream 装饰了包装后的输出流（装饰者模式）
         this.appendStream = new DataOutputStream(compressionType.wrapForOutput(this.bufferStream, magic));
     }
 
@@ -402,26 +435,32 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     private Long appendWithOffset(long offset, boolean isControlRecord, long timestamp, ByteBuffer key,
                                   ByteBuffer value, Header[] headers) {
         try {
+            // 检查 isControlRecord 标志是否一致
             if (isControlRecord != isControlBatch)
                 throw new IllegalArgumentException("Control records can only be appended to control batches");
 
+            // 严格限制消息必须从上次写入的位置开始往后写
             if (lastOffset != null && offset <= lastOffset)
                 throw new IllegalArgumentException(String.format("Illegal offset %s following previous offset %s " +
                         "(Offsets must increase monotonically).", offset, lastOffset));
-
+            // 检查时间戳
             if (timestamp < 0 && timestamp != RecordBatch.NO_TIMESTAMP)
                 throw new IllegalArgumentException("Invalid negative timestamp " + timestamp);
 
+            // 只有v2版本的才能有header
             if (magic < RecordBatch.MAGIC_VALUE_V2 && headers != null && headers.length > 0)
                 throw new IllegalArgumentException("Magic v" + magic + " does not support record headers");
 
+            // 如果该批次还没有写入过消息，那么就更新下该批次第一次写入消息的时间
             if (firstTimestamp == null)
                 firstTimestamp = timestamp;
 
+            // V2版本的批次消息写入
             if (magic > RecordBatch.MAGIC_VALUE_V1) {
                 appendDefaultRecord(offset, timestamp, key, value, headers);
                 return null;
             } else {
+                // V0、V1版本的批次消息写入
                 return appendLegacyRecord(offset, timestamp, key, value, magic);
             }
         } catch (IOException e) {
@@ -525,6 +564,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
      * @param value The record value
      * @param headers The record headers if there are any
      * @return CRC of the record or null if record-level CRC is not supported for the message format
+     * 追加新纪录到 batch 中
      */
     public Long append(long timestamp, ByteBuffer key, ByteBuffer value, Header[] headers) {
         return appendWithOffset(nextSequentialOffset(), timestamp, key, value, headers);
@@ -550,6 +590,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
      * @return CRC of the record or null if record-level CRC is not supported for the message format
      */
     public Long append(long timestamp, byte[] key, byte[] value, Header[] headers) {
+        // 追加消息到批次中
         return append(timestamp, wrapNullable(key), wrapNullable(value), headers);
     }
 
@@ -693,10 +734,15 @@ public class MemoryRecordsBuilder implements AutoCloseable {
 
     private void appendDefaultRecord(long offset, long timestamp, ByteBuffer key, ByteBuffer value,
                                      Header[] headers) throws IOException {
+        // 确认该批次是开启的（比如：已写满就会关闭批次）
         ensureOpenForRecordAppend();
+        // 计算要写入的偏移量（也就是写入的消息报文有多大，要写入多少字节到appendStream）
         int offsetDelta = (int) (offset - baseOffset);
+        // 计算本次写入与首次写入的时间差
         long timestampDelta = timestamp - firstTimestamp;
+        // 将消息写入到 appendStream 并返回该批次中压缩前的消息体大小
         int sizeInBytes = DefaultRecord.writeTo(appendStream, offsetDelta, timestampDelta, key, value, headers);
+        // 消息写入成功后更新该batch的元信息
         recordWritten(offset, timestamp, sizeInBytes);
     }
 
@@ -729,8 +775,11 @@ public class MemoryRecordsBuilder implements AutoCloseable {
             throw new IllegalArgumentException("Maximum offset delta exceeded, base offset: " + baseOffset +
                     ", last offset: " + offset);
 
+        // 写入该批次里的消息数量+1
         numRecords += 1;
+        // 压缩前的消息体大小+size
         uncompressedRecordsSizeInBytes += size;
+        // 最后一次写入的偏移量
         lastOffset = offset;
 
         if (magic > RecordBatch.MAGIC_VALUE_V0 && timestamp > maxTimestamp) {
@@ -754,8 +803,10 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     /**
      * Get an estimate of the number of bytes written (based on the estimation factor hard-coded in {@link CompressionType}.
      * @return The estimated number of bytes written
+     * 计算预计写入的字节数大小
      */
     private int estimatedBytesWritten() {
+        // 如果没有开启消息压缩，则写入的大小 = 消息头 + 消息体。如果开启了压缩消息体，则大小 = 消息头 + 未压缩的消息大小 * 压缩比例
         if (compressionType == CompressionType.NONE) {
             return batchHeaderSizeInBytes + uncompressedRecordsSizeInBytes;
         } else {
@@ -788,23 +839,28 @@ public class MemoryRecordsBuilder implements AutoCloseable {
      * re-allocation in the underlying byte buffer stream.
      */
     public boolean hasRoomFor(long timestamp, ByteBuffer key, ByteBuffer value, Header[] headers) {
+        // 已经写满了，检查两个条件：1、appendStream流状态为未关闭，2、当前以写入的预估字节数是否已经超过了该batch的容量上线
         if (isFull())
             return false;
 
         // We always allow at least one record to be appended (the ByteBufferOutputStream will grow as needed)
+        // 当前批次里写入的消息记录数量为0，说明没有写入过消息，每个批次至少可以写一条消息
         if (numRecords == 0)
             return true;
 
         final int recordSize;
         if (magic < RecordBatch.MAGIC_VALUE_V2) {
+            // 预估 v0、v1版本的record大小
             recordSize = Records.LOG_OVERHEAD + LegacyRecord.recordSize(magic, key, value);
         } else {
             int nextOffsetDelta = lastOffset == null ? 0 : (int) (lastOffset - baseOffset + 1);
             long timestampDelta = firstTimestamp == null ? 0 : timestamp - firstTimestamp;
+            // 预估v2版本的record大小
             recordSize = DefaultRecord.sizeInBytes(nextOffsetDelta, timestampDelta, key, value, headers);
         }
 
         // Be conservative and not take compression of the new record into consideration.
+        // 已经写入的消息大小 + 待写入的消息大小仍然小于该批次能写入的最大大小则该批次能继续写入消息
         return this.writeLimit >= estimatedBytesWritten() + recordSize;
     }
 
@@ -815,6 +871,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     public boolean isFull() {
         // note that the write limit is respected only after the first record is added which ensures we can always
         // create non-empty batches (this is used to disable batching when the producer's batch size is set to 0).
+        // appendStream 不是 CLOSED_STREAM 或 （该批次里没有写入过消息 并且预估的写入量要小于该批次允许的最大写入限制，比如一个批次最大限制写入16kb的消息）
         return appendStream == CLOSED_STREAM || (this.numRecords > 0 && this.writeLimit <= estimatedBytesWritten());
     }
 
@@ -830,7 +887,9 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         return magic;
     }
 
+    // 计算下一个连续的偏移量
     private long nextSequentialOffset() {
+        // 如果最近一次写入的位置为空，则从baseOffset开始写，否则从最近一次写入的位置后接着写
         return lastOffset == null ? baseOffset : lastOffset + 1;
     }
 

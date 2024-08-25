@@ -779,7 +779,7 @@ public class Sender implements Runnable {
         // 请求消息构建器
         ProduceRequest.Builder requestBuilder = ProduceRequest.Builder.forMagic(minUsedMagic, acks, timeout,
                 produceRecordsByPartition, transactionalId);
-        // 请求发送到server端后，如果server端响应，那么处理响应的回调喊出
+        // 请求发送到server端后，如果server端响应，那么处理响应的回调函数
         RequestCompletionHandler callback = response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
 
         String nodeId = Integer.toString(destination);
