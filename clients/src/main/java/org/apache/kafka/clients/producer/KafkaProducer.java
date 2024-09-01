@@ -982,10 +982,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // 6、向accumulator中追加数据
             RecordAccumulator.RecordAppendResult result = accumulator.append(tp, timestamp, serializedKey,
                     serializedValue, headers, interceptCallback, remainingWaitMs, true, nowMs);
-            // 7、新的批次需要重新进行分区
+            // 7、可以看到如果上一步返回的 abortForNewBatch = true，则表示追加写入失败，新的批次需要重新进行分区
             if (result.abortForNewBatch) {
                 int prevPartition = partition;
                 partitioner.onNewBatch(record.topic(), cluster, prevPartition);
+                // 重新查找一个分区
                 partition = partition(record, serializedKey, serializedValue, cluster);
                 tp = new TopicPartition(record.topic(), partition);
                 if (log.isTraceEnabled()) {
@@ -995,13 +996,14 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 interceptCallback = new InterceptorCallback<>(callback, this.interceptors, tp);
 
                 // 可以看到消息写入 accumulator 中就算完事儿了，后续的真正发送动作都是sender线程干的
+                // 可以看到这里重新换了一个分区进行发送
                 result = accumulator.append(tp, timestamp, serializedKey,
                     serializedValue, headers, interceptCallback, remainingWaitMs, false, nowMs);
             }
 
             if (transactionManager != null && transactionManager.isTransactional())
                 transactionManager.maybeAddPartitionToTransaction(tp);
-            // 8、如果batch已经满了，则唤醒sender线程发送数据
+            // 8、【重要】如果batch已经满了，则唤醒sender线程发送数据
             if (result.batchIsFull || result.newBatchCreated) {
                 log.trace("Waking up the sender since topic {} partition {} is either full or getting a new batch", record.topic(), partition);
                 this.sender.wakeup();
@@ -1394,8 +1396,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      * notifies producer interceptors about the request completion.
      */
     private static class InterceptorCallback<K, V> implements Callback {
+        // 发送结果回调函数
         private final Callback userCallback;
+        // 消息拦截器
         private final ProducerInterceptors<K, V> interceptors;
+        // 消息要发送到哪个分区
         private final TopicPartition tp;
 
         private InterceptorCallback(Callback userCallback, ProducerInterceptors<K, V> interceptors, TopicPartition tp) {
@@ -1406,7 +1411,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
         public void onCompletion(RecordMetadata metadata, Exception exception) {
             metadata = metadata != null ? metadata : new RecordMetadata(tp, -1, -1, RecordBatch.NO_TIMESTAMP, -1L, -1, -1);
+            // 先执行每个拦截器的 onAcknowledgement 方法
             this.interceptors.onAcknowledgement(metadata, exception);
+            // 然后再执行用户自定义的回调函数
             if (this.userCallback != null)
                 this.userCallback.onCompletion(metadata, exception);
         }

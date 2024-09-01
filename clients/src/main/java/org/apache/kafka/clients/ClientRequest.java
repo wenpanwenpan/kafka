@@ -26,13 +26,21 @@ import org.apache.kafka.common.requests.RequestHeader;
  */
 public final class ClientRequest {
 
+    // 节点地址
     private final String destination;
+    // ClientRequest中通过 requestBuilder给不同类型的请求设置不同的请求内容
     private final AbstractRequest.Builder<?> requestBuilder;
+    // 请求头的 correlationId
     private final int correlationId;
+    // 请求头的 clientId
     private final String clientId;
+    // 创建时间
     private final long createdTimeMs;
+    // 是否需要broker端进行响应（比如：ack = 0 模式下就不要broker端响应）
     private final boolean expectResponse;
+    // 请求超时时间
     private final int requestTimeoutMs;
+    // 回调函数，用来处理响应
     private final RequestCompletionHandler callback;
 
     /**

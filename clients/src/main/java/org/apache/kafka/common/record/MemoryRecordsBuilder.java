@@ -316,6 +316,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
             } catch (IOException e) {
                 throw new KafkaException(e);
             } finally {
+                // 将 appendStream 指向CLOSED_STREAM，表示该ProducerBatch不允许再写入了
                 appendStream = CLOSED_STREAM;
             }
         }

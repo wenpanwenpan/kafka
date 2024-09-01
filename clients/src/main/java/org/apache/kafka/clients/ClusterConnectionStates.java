@@ -74,6 +74,7 @@ final class ClusterConnectionStates {
     /**
      * Return true iff we can currently initiate a new connection. This will be the case if we are not
      * connected and haven't been connected for at least the minimum reconnection backoff period.
+     * 判断连接状态
      * @param id the connection id to check
      * @param now the current time in ms
      * @return true if we can initiate a new connection
@@ -86,6 +87,8 @@ final class ClusterConnectionStates {
             return true;
         else
             // 该节点的状态是连接断开并且 上次尝试连接的时间 ~ 当前时间已经超过了节点的重连时间间隔，则运行再次进行连接
+            // 首先必须是 isDisconnected ，不能是 connecteding 状态，即客户端与服务端的连接状态是没有连接上 && 两次重试
+        // 之间的时间差要大于重试退避时间，目的就是为了避免网络拥塞，防止重连过于频繁造成网络压力过大
             return state.state.isDisconnected() &&
                    now - state.lastConnectAttemptMs >= state.reconnectBackoffMs;
     }
@@ -150,13 +153,16 @@ final class ClusterConnectionStates {
      * @param clientDnsLookup the mode of DNS lookup to use when resolving the {@code host}
      */
     public void connecting(String id, long now, String host, ClientDnsLookup clientDnsLookup) {
+        // 获取节点对应的状态
         NodeConnectionState connectionState = nodeState.get(id);
         // 不为空则说明之前尝试和该节点连接过，connectionState.host().equals(host) 表示上次与该节点连接的host和本次一致
         if (connectionState != null && connectionState.host().equals(host)) {
             connectionState.lastConnectAttemptMs = now;
+            // 节点状态修改为正在连接
             connectionState.state = ConnectionState.CONNECTING;
             // Move to next resolved address, or if addresses are exhausted, mark node to be re-resolved
             connectionState.moveToNextAddress();
+            // 添加到正在连接的集合中
             connectingNodes.add(id);
             return;
         } else if (connectionState != null) {
@@ -196,9 +202,12 @@ final class ClusterConnectionStates {
         updateReconnectBackoff(nodeState);
         // 如果该节点的状态是连接中，则更新该节点为连接失败，并冲连接中的节点集合里移除
         if (nodeState.state == ConnectionState.CONNECTING) {
+            // 修改节点超时时间
             updateConnectionSetupTimeout(nodeState);
+            // 移除正在连接的节点
             connectingNodes.remove(id);
         } else {
+            // 重置节点超时时间
             resetConnectionSetupTimeout(nodeState);
             if (nodeState.state.isConnected()) {
                 // If a connection had previously been established, clear the addresses to trigger a new DNS resolution
@@ -269,11 +278,16 @@ final class ClusterConnectionStates {
      * @param id the connection identifier
      */
     public void ready(String id) {
+        // 获取到节点的状态
         NodeConnectionState nodeState = nodeState(id);
+        // 更新节点的状态为ready
         nodeState.state = ConnectionState.READY;
         nodeState.authenticationException = null;
+        // 重置重新连接的退避时间
         resetReconnectBackoff(nodeState);
+        // 重置连接的超时时间
         resetConnectionSetupTimeout(nodeState);
+        // 将该节点从连接中的节点集合移除
         connectingNodes.remove(id);
     }
 
@@ -392,7 +406,9 @@ final class ClusterConnectionStates {
      * @param nodeState The node state object to update
      */
     private void updateConnectionSetupTimeout(NodeConnectionState nodeState) {
+        // 递增失败次数
         nodeState.failedConnectAttempts++;
+        // 修改节点连接超时时间
         nodeState.connectionSetupTimeoutMs = connectionSetupTimeout.backoff(nodeState.failedConnectAttempts);
     }
 
@@ -470,6 +486,7 @@ final class ClusterConnectionStates {
 
     /**
      * Return the Set of nodes whose connection setup has timed out.
+     * 收集连接超时的节点集合：从正在连接的节点集合里循环找出超时连接的节点
      * @param now the current time in ms
      */
     public Set<String> nodesWithConnectionSetupTimeout(long now) {

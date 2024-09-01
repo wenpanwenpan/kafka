@@ -308,10 +308,10 @@ public class BufferPool {
                 // 将buffer放入free队列
                 this.free.add(buffer);
             } else {
-                // 如果不是16kb，则只用增加非池化内存可用大小，释放的byteBuffer不能再复用了，由JVM来进行回收
+                // 3、如果不是16kb，则只用增加非池化内存可用大小，释放的byteBuffer不能再复用了，由JVM来进行回收
                 this.nonPooledAvailableMemory += size;
             }
-            // 3、唤醒等待队列里第一个等待的线程
+            // 4、唤醒等待队列里第一个等待的线程
             Condition moreMem = this.waiters.peekFirst();
             if (moreMem != null)
                 moreMem.signal();
@@ -320,6 +320,7 @@ public class BufferPool {
         }
     }
 
+    /**归还内存给内存池*/
     public void deallocate(ByteBuffer buffer) {
         deallocate(buffer, buffer.capacity());
     }

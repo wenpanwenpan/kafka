@@ -219,7 +219,7 @@ public final class ProducerBatch {
 
         // 2、通过CAS来更新该批次的最终状态，只有一次能更新成功，所以回调函数也只会被执行一次
         if (this.finalState.compareAndSet(null, tryFinalState)) {
-            // 3、执行回调函数（比如：用户线程调用producer进行异步发送消息，然后注册了一个回调函数，那么这个回调函数就是在这里被回调的）
+            // 【重要】3、执行回调函数（比如：用户线程调用producer进行异步发送消息，然后注册了一个回调函数，那么这个回调函数就是在这里被回调的）
             completeFutureAndFireCallbacks(baseOffset, logAppendTime, exception);
             return true;
         }
@@ -248,6 +248,7 @@ public final class ProducerBatch {
 
         // execute callbacks
         // 2、遍历 thunks集合，调用每个record的回调函数，这里生产者发送的每条消息发送结果就会回调给发送方
+        // @see org.apache.kafka.clients.producer.KafkaProducer#doSend
         for (Thunk thunk : thunks) {
             try {
                 if (exception == null) {
@@ -347,7 +348,9 @@ public final class ProducerBatch {
      * A callback and the associated FutureRecordMetadata argument to pass to it.
      */
     final private static class Thunk {
+        // 回调函数
         final Callback callback;
+        // 消息的元数据
         final FutureRecordMetadata future;
 
         Thunk(Callback callback, FutureRecordMetadata future) {
@@ -361,7 +364,9 @@ public final class ProducerBatch {
         return "ProducerBatch(topicPartition=" + topicPartition + ", recordCount=" + recordCount + ")";
     }
 
+    // ProducerBatch是否投递超时判定
     boolean hasReachedDeliveryTimeout(long deliveryTimeoutMs, long now) {
+        // 当前时间 - 批次创建时间 >= 投递过期时间（默认120s）
         return deliveryTimeoutMs <= now - this.createdMs;
     }
 
@@ -374,7 +379,9 @@ public final class ProducerBatch {
     }
 
     void reenqueued(long now) {
+        // 重试次数+1
         attempts.getAndIncrement();
+        // 更新最近一次重试的时间戳
         lastAttemptMs = Math.max(lastAppendTime, now);
         lastAppendTime = Math.max(lastAppendTime, now);
         retry = true;

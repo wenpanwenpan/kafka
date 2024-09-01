@@ -30,13 +30,16 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 final class InFlightRequests {
 
+    // 每个连接中最大执行中的请求数，用于控制对broker的请求负载
     private final int maxInFlightRequestsPerConnection;
     // key：nodeID，value：待发送给该node的请求或等待该node返回结果的请求队列
     private final Map<String, Deque<NetworkClient.InFlightRequest>> requests = new HashMap<>();
     /** Thread safe total number of in flight requests. */
+    // 发送中的请求计数器
     private final AtomicInteger inFlightRequestCount = new AtomicInteger(0);
 
     public InFlightRequests(int maxInFlightRequestsPerConnection) {
+        // 设置每个连接最大执行中的请求数
         this.maxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection;
     }
 
@@ -45,13 +48,17 @@ final class InFlightRequests {
      * 添加request到待发送或待server端响应的map集合
      */
     public void add(NetworkClient.InFlightRequest request) {
+        // 请求要发送到哪个 broker 节点上
         String destination = request.destination;
+        // 从 requests 集合中根据nodeID获取节点对应的双端队列
         Deque<NetworkClient.InFlightRequest> reqs = this.requests.get(destination);
         if (reqs == null) {
             reqs = new ArrayDeque<>();
             this.requests.put(destination, reqs);
         }
+        // 将请求加入到双端队列的队首
         reqs.addFirst(request);
+        // 增加计数
         inFlightRequestCount.incrementAndGet();
     }
 
@@ -68,9 +75,12 @@ final class InFlightRequests {
 
     /**
      * Get the oldest request (the one that will be completed next) for the given node
+     * 取出该连接对应的队列中最老的请求
      */
     public NetworkClient.InFlightRequest completeNext(String node) {
+        // 获取该连接的双端队列的最后一个元素
         NetworkClient.InFlightRequest inFlightRequest = requestQueue(node).pollLast();
+        // 计数器-1
         inFlightRequestCount.decrementAndGet();
         return inFlightRequest;
     }
@@ -78,6 +88,7 @@ final class InFlightRequests {
     /**
      * Get the last request we sent to the given node (but don't remove it from the queue)
      * @param node The node id
+     *             获取某个连接最新的请求
      */
     public NetworkClient.InFlightRequest lastSent(String node) {
         return requestQueue(node).peekFirst();
@@ -85,23 +96,29 @@ final class InFlightRequests {
 
     /**
      * Complete the last request that was sent to a particular node.
+     * 出队某个连接最新的请求
      * @param node The node the request was sent to
      * @return The request
      */
     public NetworkClient.InFlightRequest completeLastSent(String node) {
+        // 从发送中的队列里取头节点
         NetworkClient.InFlightRequest inFlightRequest = requestQueue(node).pollFirst();
+        // 发送中的请求数量-1
         inFlightRequestCount.decrementAndGet();
         return inFlightRequest;
     }
 
     /**
      * Can we send more requests to this node?
-     *
+     * 判断该连接是否还能发送请求，用于控制节点负载
      * @param node Node in question
      * @return true iff we have no requests still being sent to the given node
      */
     public boolean canSendMore(String node) {
+        // 获取节点对应的双端队列
         Deque<NetworkClient.InFlightRequest> queue = requests.get(node);
+        // 队列为空 || （队首已经发送完成&& 队列中没有堆积更多的请求）
+        // 队首的请求和kafkaChannel.send 字段指向的是同一个请求
         return queue == null || queue.isEmpty() ||
                (queue.peekFirst().send.completed() && queue.size() < this.maxInFlightRequestsPerConnection);
     }
@@ -159,9 +176,11 @@ final class InFlightRequests {
         }
     }
 
+    // 队列里是否有超时的节点
     private Boolean hasExpiredRequest(long now, Deque<NetworkClient.InFlightRequest> deque) {
         for (NetworkClient.InFlightRequest request : deque) {
             long timeSinceSend = Math.max(0, now - request.sendTimeMs);
+            // 节点队列请求是否超时，如果有一个请求超时，则认为这个broker超时了，默认30s
             if (timeSinceSend > request.requestTimeoutMs)
                 return true;
         }
@@ -170,16 +189,21 @@ final class InFlightRequests {
 
     /**
      * Returns a list of nodes with pending in-flight request, that need to be timed out
-     *
+     * 收集超时请求的节点集合
      * @param now current time in milliseconds
      * @return list of nodes
      */
     public List<String> nodesWithTimedOutRequests(long now) {
         List<String> nodeIds = new ArrayList<>();
+        // 遍历节点队列
         for (Map.Entry<String, Deque<NetworkClient.InFlightRequest>> requestEntry : requests.entrySet()) {
+            // 获取节点ID
             String nodeId = requestEntry.getKey();
+            // 获取队列数据
             Deque<NetworkClient.InFlightRequest> deque = requestEntry.getValue();
+            // 判断是否超时
             if (hasExpiredRequest(now, deque))
+                // 超时后将节点加入集合
                 nodeIds.add(nodeId);
         }
         return nodeIds;
