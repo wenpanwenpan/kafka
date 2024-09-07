@@ -593,13 +593,15 @@ public class NetworkClient implements KafkaClient {
             completeResponses(responses);
             return responses;
         }
-        // 1、尝试更新元数据
+        // 【重要】1、尝试更新元数据，前面我们看到如果需要更新元数据，那么只是修改了一下metadata的一些属性（比如：needFullUpdate，needPartialUpdate）
+        // 并没有做真正的更新元数据，此处就是真正去发送请求到broker，然后更新本地元数据缓存的地方了
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
         try {
             // 2、【核心代码】执行io操作（就是在这里进行的感知有读写事件发生的channel连接），这里三个超时时间取最小
             // 如果没有任何连接有读写事件发生，那么最多阻塞 x 毫秒，因为send线程还要去做其他事情，不能一直阻塞
             // 会把kafkaChannel的send属性上的buffer写入到channel后，保存到selector的completedSends 集合里，便于下面的 handleCompletedSends 方法处理
             // 这会将broker端响应的数据读取到对应的kafka channel的NetworkReceive属性上，并保存到selector的completedReceives集合内便于下面的handleCompletedReceives方法处理
+            // 这里就会阻塞selector，所以下面的 wakeUp方法也就是唤醒的此处的阻塞的selector
             this.selector.poll(Utils.min(timeout, metadataTimeout, defaultRequestTimeoutMs));
         } catch (IOException e) {
             log.error("Unexpected error during I/O", e);
@@ -681,6 +683,7 @@ public class NetworkClient implements KafkaClient {
      */
     @Override
     public void wakeup() {
+        // 唤醒NIO底层的selector，selector会阻塞在哪里呢？ @see 上面的 org.apache.kafka.clients.NetworkClient.poll
         this.selector.wakeup();
     }
 
@@ -917,7 +920,7 @@ public class NetworkClient implements KafkaClient {
      */
     private void handleCompletedSends(List<ClientResponse> responses, long now) {
         // if no response is expected then when the send is completed, return it
-        // 1、获取已经写入socketChannel的buffer集合并做遍历
+        // 1、获取已经写入socketChannel的buffer集合并做遍历（说明数据已经向broker发出了）
         for (Send send : this.selector.completedSends()) {
             // 通过发送目的地来从等待响应的请求队列里取出第一个请求（注意：发送消息的时候入队也是采用的头插法）
             // 2、从 inFlightRequests 集合中获取该send关联的对应的Node队列，取出最新的请求，注意：这里并没有从队列中删除
@@ -1178,14 +1181,17 @@ public class NetworkClient implements KafkaClient {
             long waitForMetadataFetch = hasFetchInProgress() ? defaultRequestTimeoutMs : 0;
             // 计算元数据超时时间
             long metadataTimeout = Math.max(timeToNextMetadataUpdate, waitForMetadataFetch);
+            // 如果大于0，则说明可能当前时刻还不需要去更新元数据，返回需要等待的时间即可
             if (metadataTimeout > 0) {
                 return metadataTimeout;
             }
 
             // Beware that the behavior of this method and the computation of timeouts for poll() are
             // highly dependent on the behavior of leastLoadedNode.
-            // 表示需要立即更新，取最空闲的节点node
+            // 表示需要立即更新，取最空闲的节点node（这里可以详细看下他是如何决策出负载最小的节点的，其实就是看 inFlightRequests
+            // 队列中正在发送的消息数量，数量越少则表示负载越小）
             Node node = leastLoadedNode(now);
+            // 无可用的节点，那么返回重试退避时间
             if (node == null) {
                 log.debug("Give up sending metadata request since no node is available");
                 return reconnectBackoffMs;

@@ -26,6 +26,7 @@ import java.nio.channels.GatheringByteChannel;
  */
 public class ByteBufferSend implements Send {
 
+    // 要把buffer里的数据写入的目标channel ID
     private final String destination;
     // 总共要写多少字节的数据
     private final int size;

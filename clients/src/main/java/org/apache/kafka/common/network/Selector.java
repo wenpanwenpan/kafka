@@ -393,6 +393,7 @@ public class Selector implements Selectable, AutoCloseable {
      */
     @Override
     public void wakeup() {
+        // 唤醒NIO底层的selector
         this.nioSelector.wakeup();
     }
 

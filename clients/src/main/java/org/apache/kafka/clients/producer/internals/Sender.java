@@ -876,6 +876,8 @@ public class Sender implements Runnable {
      * Wake up the selector associated with this send thread
      */
     public void wakeup() {
+        // 缓存networkClient（也就是会间接唤醒NIO底层的selector），那么 selector 会阻塞在哪里呢？？？
+        // @see org.apache.kafka.clients.NetworkClient.poll 方法里的 selector#poll方法 selector 便会阻塞等待事件发生
         this.client.wakeup();
     }
 

@@ -930,7 +930,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             long nowMs = time.milliseconds();
             ClusterAndWaitTime clusterAndWaitTime;
             try {
-                // 1、等待元数据更新即确认数据要发送到的topic的metadata是可用的，所以说发送消息前一定要获取到元数据
+                // 1、等待元数据更新即确认数据要发送到的topic的metadata是可用的，所以说发送消息前一定要获取到元数据(这里会阻塞等待元数据更新成功)
                 clusterAndWaitTime = waitOnMetadata(record.topic(), record.partition(), nowMs, maxBlockTimeMs);
             } catch (KafkaException e) {
                 if (metadata.isClosed())
@@ -1008,6 +1008,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 log.trace("Waking up the sender since topic {} partition {} is either full or getting a new batch", record.topic(), partition);
                 this.sender.wakeup();
             }
+            // 返回一个future给发送方，发送方可以通过这个future来等待发送结果
             return result.future;
             // handling exceptions and record the errors;
             // for API exceptions return them in the future,
@@ -1064,6 +1065,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         // Return cached metadata if we have it, and if the record's partition is either undefined
         // or within the known partition range
         // 5、满足这些条件后就不用去broker拉取元数据了，直接从元数据缓存中返回元数据
+        // 从元数据里拿到了这个topic的分区数量 并且 (发送方没有指定要发送的分区 或 指定的分区小于从元数据里获取到的分区数量（说明指定的分区在元数据的分区内）)
         if (partitionsCount != null && (partition == null || partition < partitionsCount))
             return new ClusterAndWaitTime(cluster, 0);
 
@@ -1081,9 +1083,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             }
             // 7、将topic及过期时间添加到topic元数据列表中
             metadata.add(topic, nowMs + elapsed);
-            // 8、标记元数据更新表示，获取元数据版本号
+            // 8、标记元数据更新表示，获取元数据版本号（在这里只是标记元数据需要全部更新或部分更新并没有真正更新，真正更新在sender线程内）
             int version = metadata.requestUpdateForTopic(topic);
-            // 9、唤醒sender线程，详见sender线程的 run 方法
+            // 9、唤醒sender线程，详见sender线程的 run 方法（在run方法里会真实的去更新元数据）
             sender.wakeup();
             try {
                 // 10、阻塞的等待sender线程更新元数据成功

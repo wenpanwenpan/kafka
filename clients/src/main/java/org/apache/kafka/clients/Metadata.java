@@ -132,6 +132,7 @@ public class Metadata implements Closeable {
      * @return remaining time in ms till the cluster info can be updated again
      */
     public synchronized long timeToAllowUpdate(long nowMs) {
+        // 最后一次更新元数据的时间 + 重试退避时间
         return Math.max(this.lastRefreshMs + this.refreshBackoffMs - nowMs, 0);
     }
 
@@ -144,6 +145,9 @@ public class Metadata implements Closeable {
      * @return remaining time in ms till updating the cluster info
      */
     public synchronized long timeToNextUpdate(long nowMs) {
+        // 如果需要部分更新或全量更新，则返回0，表示立即去更新元数据，如果不需要立即更新，则看下截止当前时间元数据是否过期了，如果已过期那么也返回0，表示需要立即更新
+        // 在producer调用send方法发送消息时，首先会去更新元数据，但是在那里只是更新了
+        // 一下metadata里的 needFullUpdate 或 needPartialUpdate 标识，并没有真正更新
         long timeToExpire = updateRequested() ? 0 : Math.max(this.lastSuccessfulRefreshMs + this.metadataExpireMs - nowMs, 0);
         return Math.max(timeToExpire, timeToAllowUpdate(nowMs));
     }

@@ -126,6 +126,7 @@ public class ProducerMetadata extends Metadata {
      */
     public synchronized void awaitUpdate(final int lastVersion, final long timeoutMs) throws InterruptedException {
         long currentTimeMs = time.milliseconds();
+        // 等待元数据更新的超时时间
         long deadlineMs = currentTimeMs + timeoutMs < 0 ? Long.MAX_VALUE : currentTimeMs + timeoutMs;
         // 在this对象上带超时时间的等待，当被唤醒时就会执行lamda表达式进行判断是否已经符合条件
         time.waitObject(this, () -> {

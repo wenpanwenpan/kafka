@@ -47,11 +47,15 @@ import java.util.Objects;
  * {@link RecordMetadata}
  */
 public class ProducerRecord<K, V> {
-
+    // 消息是发送给哪个topic的
     private final String topic;
+    // 发送给topic的哪个分区
     private final Integer partition;
+    // 消息头
     private final Headers headers;
+    // 消息的key
     private final K key;
+    // 消息
     private final V value;
     private final Long timestamp;
 
