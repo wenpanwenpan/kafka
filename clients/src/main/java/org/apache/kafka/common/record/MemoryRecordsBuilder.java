@@ -59,7 +59,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     // Used to hold a reference to the underlying ByteBuffer so that we can write the record batch header and access
     // the written bytes. ByteBufferOutputStream allocates a new ByteBuffer if the existing one is not large enough,
     // so it's not safe to hold a direct reference to the underlying ByteBuffer.
-    // kafka对outputStream的实现类，对byteBuffer实现了自动扩容的能力
+    // 【重要】kafka对outputStream的实现类，对byteBuffer实现了自动扩容的能力（待发送的消息就存储在里面的 buffer 属性里，见下面的构造函数）
     private final ByteBufferOutputStream bufferStream;
     // 消息的版本
     private final byte magic;
@@ -112,7 +112,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     private MemoryRecords builtRecords;
     private boolean aborted = false;
 
-    public MemoryRecordsBuilder(ByteBufferOutputStream bufferStream,
+    public MemoryRecordsBuilder(ByteBufferOutputStream bufferStream,// 消息输出流，待发送的消息就是写入这个流里面的
                                 byte magic,
                                 CompressionType compressionType,
                                 TimestampType timestampType,
@@ -200,6 +200,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
                                 boolean isControlBatch,
                                 int partitionLeaderEpoch,
                                 int writeLimit) {
+        // 这里可以看到用输出流包装了数据buffer
         this(new ByteBufferOutputStream(buffer), magic, compressionType, timestampType, baseOffset, logAppendTime,
                 producerId, producerEpoch, baseSequence, isTransactional, isControlBatch, partitionLeaderEpoch,
                 writeLimit);

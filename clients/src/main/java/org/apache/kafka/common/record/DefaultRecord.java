@@ -175,6 +175,7 @@ public class DefaultRecord implements Record {
 
     /**
      * Write the record to `out` and return its size.
+     * 这里就是按照一定的消息格式将数据写入到输出流里，后续冲输出流中读取数据也按照这个规则来读取
      */
     public static int writeTo(DataOutputStream out,
                               int offsetDelta,
@@ -183,14 +184,16 @@ public class DefaultRecord implements Record {
                               ByteBuffer value,
                               Header[] headers) throws IOException {
         int sizeInBytes = sizeOfBodyInBytes(offsetDelta, timestampDelta, key, value, headers);
+        // 首先写入消息的大小到输出流
         ByteUtils.writeVarint(sizeInBytes, out);
-
+        // 写入一个字节
         byte attributes = 0; // there are no used record attributes at the moment
         out.write(attributes);
-
+        // 写入时间戳
         ByteUtils.writeVarlong(timestampDelta, out);
         ByteUtils.writeVarint(offsetDelta, out);
 
+        // 写入消息key到输出流
         if (key == null) {
             ByteUtils.writeVarint(-1, out);
         } else {
@@ -199,6 +202,7 @@ public class DefaultRecord implements Record {
             Utils.writeTo(out, key, keySize);
         }
 
+        // 将消息写入到输出流
         if (value == null) {
             ByteUtils.writeVarint(-1, out);
         } else {
@@ -210,8 +214,10 @@ public class DefaultRecord implements Record {
         if (headers == null)
             throw new IllegalArgumentException("Headers cannot be null");
 
+        // 写入消息头的长度
         ByteUtils.writeVarint(headers.length, out);
 
+        // 写入消息头
         for (Header header : headers) {
             String headerKey = header.key();
             if (headerKey == null)

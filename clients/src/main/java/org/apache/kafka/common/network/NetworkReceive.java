@@ -42,7 +42,7 @@ public class NetworkReceive implements Receive {
     private final ByteBuffer size;
     // 响应消息数据的最大长度
     private final int maxSize;
-    // ByteBuffer内存池
+    // ByteBuffer内存池，用于分配 ByteBuffer
     private final MemoryPool memoryPool;
     // 已读取的字节大小
     private int requestedBufferSize = -1;

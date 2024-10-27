@@ -70,6 +70,7 @@ public final class ProducerBatch {
     // 用来存储消息的callback和响应数据
     private final List<Thunk> thunks = new ArrayList<>();
     // 【重要】批次里的消息就是存放在这的，MemoryRecordsBuilder 用于管理批次消息的写入（比如：该批次还剩多少空间可写）
+    // recordsBuilder 里有一个bufferStream属性，bufferStream里包含了一个byteBuffer，用于真实存放写入批次的数据
     private final MemoryRecordsBuilder recordsBuilder;
     // 重试次数
     private final AtomicInteger attempts = new AtomicInteger(0);

@@ -239,25 +239,36 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     public static final String NETWORK_THREAD_PREFIX = "kafka-producer-network-thread";
     public static final String PRODUCER_METRIC_GROUP_NAME = "producer-metrics";
 
+    // 生产者的客户端ID
     private final String clientId;
     // Visible for testing
     final Metrics metrics;
+    // 消息分区器
     private final Partitioner partitioner;
     private final int maxRequestSize;
     private final long totalMemorySize;
+    // 元数据
     private final ProducerMetadata metadata;
+    // 消息累加器（生产者发送的消息就会被缓冲在这里）
     private final RecordAccumulator accumulator;
+    // sender线程
     private final Sender sender;
     private final Thread ioThread;
+    // 消息发送时的压缩算法
     private final CompressionType compressionType;
     private final Sensor errors;
     private final Time time;
+    // 消息的key序列化器
     private final Serializer<K> keySerializer;
+    // 消息的value序列化器
     private final Serializer<V> valueSerializer;
+    // 生产者配置
     private final ProducerConfig producerConfig;
     private final long maxBlockTimeMs;
+    // 消息生产拦截器
     private final ProducerInterceptors<K, V> interceptors;
     private final ApiVersions apiVersions;
+    // 事务消息管理器
     private final TransactionManager transactionManager;
 
     /**

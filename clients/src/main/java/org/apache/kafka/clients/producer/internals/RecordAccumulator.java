@@ -261,9 +261,9 @@ public final class RecordAccumulator {
                     return appendResult;
                 }
 
-                // 9、将buffer封装成一个builder，用于对消息写入 producerBatch进行封装管理
+                // 9、将分配的buffer封装成一个builder，用于对消息写入 producerBatch进行封装管理
                 MemoryRecordsBuilder recordsBuilder = recordsBuilder(buffer, maxUsableMagic);
-                // 10、使用从bufferPool新申请的byteBuffer构建ProducerBatch
+                // 10、使用从bufferPool新申请的byteBuffer构建ProducerBatch（最终写入ProducerBatch的数据就是放在recordsBuilder里的buffer里的）
                 ProducerBatch batch = new ProducerBatch(tp, recordsBuilder, nowMs);
                 // 11、尝试向刚创建的消息批次里写入消息（这里一般来说一定能写成功，因为这个批次刚刚创建，没有写入任何消息）
                 FutureRecordMetadata future = Objects.requireNonNull(batch.tryAppend(timestamp, key, value, headers,

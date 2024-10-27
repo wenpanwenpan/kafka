@@ -145,7 +145,9 @@ public class BufferPool {
             if (this.nonPooledAvailableMemory + freeListSize >= size) {
                 // we have enough unallocated or pooled memory to immediately
                 // satisfy the request, but need to allocate the buffer
+                // 从池化内存释放内存到非池化内存，直到非池化内存大于size
                 freeUp(size);
+                // 因为马上要从非池化内存里分配出size大小的空间，所以这里需要将非池化内存减少size
                 this.nonPooledAvailableMemory -= size;
             } else {
                 // we are out of memory and will have to block

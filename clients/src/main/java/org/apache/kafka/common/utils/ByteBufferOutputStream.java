@@ -63,11 +63,13 @@ public class ByteBufferOutputStream extends OutputStream {
         this(directBuffer ? ByteBuffer.allocateDirect(initialCapacity) : ByteBuffer.allocate(initialCapacity));
     }
 
+    // 写一个字节到输出流里（也就是写入到buffer里）
     public void write(int b) {
         ensureRemaining(1);
         buffer.put((byte) b);
     }
 
+    // 将字节数组写入到输出流里（也就是buffer里）
     public void write(byte[] bytes, int off, int len) {
         ensureRemaining(len);
         buffer.put(bytes, off, len);

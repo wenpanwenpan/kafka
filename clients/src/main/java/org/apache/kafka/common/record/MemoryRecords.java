@@ -490,7 +490,7 @@ public class MemoryRecords extends AbstractRecords {
                 producerId, producerEpoch, baseSequence, false, RecordBatch.NO_PARTITION_LEADER_EPOCH);
     }
 
-    public static MemoryRecordsBuilder builder(ByteBuffer buffer,
+    public static MemoryRecordsBuilder builder(ByteBuffer buffer, // 容纳数据的buffer
                                                byte magic, // 消息版本
                                                CompressionType compressionType, // 消息压缩类型
                                                TimestampType timestampType, // 时间戳
@@ -505,7 +505,7 @@ public class MemoryRecords extends AbstractRecords {
                 logAppendTime, producerId, producerEpoch, baseSequence, isTransactional, false, partitionLeaderEpoch);
     }
 
-    public static MemoryRecordsBuilder builder(ByteBuffer buffer,
+    public static MemoryRecordsBuilder builder(ByteBuffer buffer,// 容纳数据的buffer
                                                byte magic,
                                                CompressionType compressionType,
                                                TimestampType timestampType,

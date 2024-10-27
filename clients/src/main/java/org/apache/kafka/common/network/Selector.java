@@ -110,7 +110,7 @@ public class Selector implements Selectable, AutoCloseable {
     private boolean outOfMemory;
     // 已发送完成的buffer集合
     private final List<Send> completedSends;
-    // 以接收完毕的buffer集合，key：channelID，value：buffer集合（一个NetworkReceive代表server端响应的一次消息）
+    // 已接收完毕的buffer集合，key：channelID，value：buffer集合（一个NetworkReceive代表server端响应的一次消息）
     // sender线程会将selector上管理的每个channel里的数据都读取到这里进行缓存
     private final LinkedHashMap<String, NetworkReceive> completedReceives;
     // 立即连接的channel集合（也就是刚建立连接完成的channel集合）
@@ -134,7 +134,7 @@ public class Selector implements Selectable, AutoCloseable {
     // 空闲超时到期连接管理器
     private final IdleExpiryManager idleExpiryManager;
     private final LinkedHashMap<String, DelayedAuthenticationFailureClose> delayedClosingChannels;
-    // 用来管理 byteBuffer 的内存池
+    // 用来管理 byteBuffer 的内存池（用于分配 ByteBuffer）
     private final MemoryPool memoryPool;
     private final long lowMemThreshold;
     private final int failedAuthenticationDelayMs;
