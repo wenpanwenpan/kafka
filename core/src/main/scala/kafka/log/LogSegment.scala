@@ -66,10 +66,14 @@ class LogSegment private[log] (val log: FileRecords,
 
   def timeIndex: TimeIndex = lazyTimeIndex.get
 
+  // 是否需要新建一个日志段
   def shouldRoll(rollParams: RollParams): Boolean = {
+    // 1、segment里的消息大小加上现在这个消息的大小超过1g，则需要新建一个segment
     val reachedRollMs = timeWaitedForRoll(rollParams.now, rollParams.maxTimestampInMessages) > rollParams.maxSegmentMs - rollJitterMs
+    // 2、日志段有数据并且距离上次创建日志段的时间已经超过了一个阈值（log.roll.hours默认7天），则需要新建一个segment
     size > rollParams.maxSegmentBytes - rollParams.messagesSize ||
       (size > 0 && reachedRollMs) ||
+      // 3、偏移量索引文件写满了（log.index.size.max.bytes 默认10m） 或 4、时间索引文件写满了 或 5、待写入的偏移量大于integer的最大值了
       offsetIndex.isFull || timeIndex.isFull || !canConvertToRelativeOffset(rollParams.maxOffsetInMessages)
   }
 
@@ -132,6 +136,7 @@ class LogSegment private[log] (val log: FileRecords,
    * an entry to the index if needed.
    *
    * It is assumed this method is being called from within a lock.
+   * 真正将消息追加到logSegment的地方
    *
    * @param largestOffset The last offset in the message set
    * @param largestTimestamp The largest timestamp in the message set.
@@ -141,33 +146,47 @@ class LogSegment private[log] (val log: FileRecords,
    * @throws LogSegmentOffsetOverflowException if the largest offset causes index offset overflow
    */
   @nonthreadsafe
-  def append(largestOffset: Long,
-             largestTimestamp: Long,
-             shallowOffsetOfMaxTimestamp: Long,
+  def append(largestOffset: Long, // 最大位移
+             largestTimestamp: Long, // 最大时间戳
+             shallowOffsetOfMaxTimestamp: Long, // 最大时间戳对应消息的位移
+            // 待写入的消息集合
              records: MemoryRecords): Unit = {
     if (records.sizeInBytes > 0) {
       trace(s"Inserting ${records.sizeInBytes} bytes at end offset $largestOffset at position ${log.sizeInBytes} " +
             s"with largest timestamp $largestTimestamp at shallow offset $shallowOffsetOfMaxTimestamp")
       val physicalPosition = log.sizeInBytes()
-      if (physicalPosition == 0)
+      // 第一步：判断该日志段是否为空
+      if (physicalPosition == 0) {
+        // 记录要写入消息集合里的最大时间戳，并将其作为后面新增日志段倒计时的依据
         rollingBasedTimestamp = Some(largestTimestamp)
+      }
 
+      // 第二步：确保输入参数的最大位移值是合法的
       ensureOffsetInRange(largestOffset)
 
       // append the messages
+      // 第三步：将内存中的消息对象写入到操作系统的pageCache
       val appendedBytes = log.append(records)
       trace(s"Appended $appendedBytes to ${log.file} at end offset $largestOffset")
       // Update the in memory max timestamp and corresponding offset.
+      // 第四步：更新日志段的最大时间戳以及最大时间戳所属消息的位移值属性
       if (largestTimestamp > maxTimestampSoFar) {
         maxTimestampSoFar = largestTimestamp
         offsetOfMaxTimestampSoFar = shallowOffsetOfMaxTimestamp
       }
       // append an entry to the index (if needed)
+      // 第五步：更新索引项和写入字节数，kafka保证时间戳索引项保存时间戳与消息位移的对应关系
+      // 索引是稀疏索引，不是每条数据都建立索引，写4Kb时才会建立一个索引项
+      // indexIntervalBytes 默认是4kb，即4kb才建立一个索引项
       if (bytesSinceLastIndexEntry > indexIntervalBytes) {
+        // 写入偏移量索引
         offsetIndex.append(largestOffset, physicalPosition)
+        // 写入时间戳索引
         timeIndex.maybeAppend(maxTimestampSoFar, offsetOfMaxTimestampSoFar)
+        // 索引写完后重置为0，等到下一个4k时再创建索引
         bytesSinceLastIndexEntry = 0
       }
+      // 写入log文件的消息大小累加
       bytesSinceLastIndexEntry += records.sizeInBytes
     }
   }
@@ -655,22 +674,32 @@ class LogSegment private[log] (val log: FileRecords,
 
 }
 
+// 日志段工具对象
 object LogSegment {
 
+  // 创建一个日志段
   def open(dir: File, baseOffset: Long, config: LogConfig, time: Time, fileAlreadyExists: Boolean = false,
            initFileSize: Int = 0, preallocate: Boolean = false, fileSuffix: String = ""): LogSegment = {
     val maxIndexSize = config.maxIndexSize
     new LogSegment(
+      // 日志文件对象
       FileRecords.open(Log.logFile(dir, baseOffset, fileSuffix), fileAlreadyExists, initFileSize, preallocate),
+      // 偏移量索引对象
       LazyIndex.forOffset(Log.offsetIndexFile(dir, baseOffset, fileSuffix), baseOffset = baseOffset, maxIndexSize = maxIndexSize),
+      // 时间戳索引对象
       LazyIndex.forTime(Log.timeIndexFile(dir, baseOffset, fileSuffix), baseOffset = baseOffset, maxIndexSize = maxIndexSize),
+      // 事务索引对象
       new TransactionIndex(baseOffset, Log.transactionIndexFile(dir, baseOffset, fileSuffix)),
+      // logSegment的baseOffset
       baseOffset,
+      // 隔多少字节创建一个索引，一般是4kb
       indexIntervalBytes = config.indexInterval,
       rollJitterMs = config.randomSegmentJitter,
+      // 该日志段创建时间
       time)
   }
 
+  // 删除文件
   def deleteIfExists(dir: File, baseOffset: Long, fileSuffix: String = ""): Unit = {
     Log.deleteFileIfExists(Log.offsetIndexFile(dir, baseOffset, fileSuffix))
     Log.deleteFileIfExists(Log.timeIndexFile(dir, baseOffset, fileSuffix))

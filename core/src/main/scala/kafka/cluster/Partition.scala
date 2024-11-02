@@ -1062,6 +1062,7 @@ class Partition(val topicPartition: TopicPartition,
     }
   }
 
+  // 将生产者发送来的消息集合写入到leader节点的log中
   def appendRecordsToLeader(records: MemoryRecords, origin: AppendOrigin, requiredAcks: Int): LogAppendInfo = {
     val (info, leaderHWIncremented) = inReadLock(leaderIsrUpdateLock) {
       leaderLogIfLocal match {
@@ -1075,10 +1076,12 @@ class Partition(val topicPartition: TopicPartition,
               s"is insufficient to satisfy the min.isr requirement of $minIsr for partition $topicPartition")
           }
 
+          // 【重要】调用 log对象的 appendAsLeader 方法，将消息写入leader的log文件中
           val info = leaderLog.appendAsLeader(records, leaderEpoch = this.leaderEpoch, origin,
             interBrokerProtocolVersion)
 
           // we may need to increment high watermark since ISR could be down to 1
+          // 可能会增加高水位的值
           (info, maybeIncrementLeaderHW(leaderLog))
 
         case None =>

@@ -128,12 +128,14 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   /**
    * Top-level method that handles all requests and multiplexes to the right api
+   * 【重点方法】
    */
   override def handle(request: RequestChannel.Request): Unit = {
     try {
       trace(s"Handling request:${request.requestDesc(true)} from connection ${request.context.connectionId};" +
         s"securityProtocol:${request.context.securityProtocol},principal:${request.context.principal}")
       request.header.apiKey match {
+        // 处理生产发来的消息
         case ApiKeys.PRODUCE => handleProduceRequest(request)
         case ApiKeys.FETCH => handleFetchRequest(request)
         case ApiKeys.LIST_OFFSETS => handleListOffsetRequest(request)
@@ -522,13 +524,16 @@ class KafkaApis(val requestChannel: RequestChannel,
       return
     }
 
+    // 取出从生产者发送过来的消息集合
     val produceRecords = produceRequest.partitionRecordsOrFail.asScala
     val unauthorizedTopicResponses = mutable.Map[TopicPartition, PartitionResponse]()
     val nonExistingTopicResponses = mutable.Map[TopicPartition, PartitionResponse]()
     val invalidRequestResponses = mutable.Map[TopicPartition, PartitionResponse]()
+    // key是topic的分区，value是要写入该分区的消息集合
     val authorizedRequestInfo = mutable.Map[TopicPartition, MemoryRecords]()
     val authorizedTopics = filterByAuthorized(request.context, WRITE, TOPIC, produceRecords)(_._1.topic)
 
+    // 遍历生产者发送过来的消息集合，按照topic 分区进行分组
     for ((topicPartition, memoryRecords) <- produceRecords) {
       if (!authorizedTopics.contains(topicPartition.topic))
         unauthorizedTopicResponses += topicPartition -> new PartitionResponse(Errors.TOPIC_AUTHORIZATION_FAILED)
@@ -615,11 +620,13 @@ class KafkaApis(val requestChannel: RequestChannel,
       val internalTopicsAllowed = request.header.clientId == AdminUtils.AdminClientId
 
       // call the replica manager to append messages to the replicas
+      // 【重点方法】将消息写入到对应副本的log日志中
       replicaManager.appendRecords(
         timeout = produceRequest.timeout.toLong,
         requiredAcks = produceRequest.acks,
         internalTopicsAllowed = internalTopicsAllowed,
         origin = AppendOrigin.Client,
+        // 分组好的待写入到对应分区的消息记录
         entriesPerPartition = authorizedRequestInfo,
         responseCallback = sendResponseCallback,
         recordConversionStatsCallback = processingStatsCallback)
