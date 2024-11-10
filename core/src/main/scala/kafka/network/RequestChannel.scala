@@ -310,12 +310,15 @@ object RequestChannel extends Logging {
   }
 }
 
-class RequestChannel(val queueSize: Int,
-                     val metricNamePrefix : String,
+class RequestChannel(val queueSize: Int, // 请求队列的大小
+                     val metricNamePrefix : String, // 度量指标前缀
                      time: Time) extends KafkaMetricsGroup {
   import RequestChannel._
+  // 管理请求通道的度量指标对象
   val metrics = new RequestChannel.Metrics
+  // 请求队列，大小默认500，processor接收到请求后会转换一下，然后放在这个队列里
   private val requestQueue = new ArrayBlockingQueue[BaseRequest](queueSize)
+  // processor线程池，默认3个，可通过 num.network.threads 修改
   private val processors = new ConcurrentHashMap[Int, Processor]()
   val requestQueueSizeMetricName = metricNamePrefix.concat(RequestQueueSizeMetric)
   val responseQueueSizeMetricName = metricNamePrefix.concat(ResponseQueueSizeMetric)
@@ -328,29 +331,36 @@ class RequestChannel(val queueSize: Int,
     }
   })
 
+  // 添加processor到processors中
   def addProcessor(processor: Processor): Unit = {
+    // 添加
     if (processors.putIfAbsent(processor.id, processor) != null)
       warn(s"Unexpected processor with processorId ${processor.id}")
-
+    // 为该processor创建监控指标
     newGauge(responseQueueSizeMetricName, () => processor.responseQueueSize,
       Map(ProcessorMetricTag -> processor.id.toString))
   }
 
   def removeProcessor(processorId: Int): Unit = {
+    // 移除processor
     processors.remove(processorId)
+    // 移除对应的监控指标
     removeMetric(responseQueueSizeMetricName, Map(ProcessorMetricTag -> processorId.toString))
   }
 
   /** Send a request to be handled, potentially blocking until there is room in the queue for the request */
   def sendRequest(request: RequestChannel.Request): Unit = {
+    // 将请求对象放入到队列中（一般是processor调用）
     requestQueue.put(request)
   }
 
+  // handler处理完请求后需要将响应数据发回到对应的processor里的responseQueue中，就是通过这个方法实现的
   /** Send a response back to the socket server to be sent over the network */
   def sendResponse(response: RequestChannel.Response): Unit = {
-
+    // 1、如果进行了跟踪操作，那么会打印出请求详情
     if (isTraceEnabled) {
       val requestHeader = response.request.header
+      // 根据响应消息类型不同进行不同处理
       val message = response match {
         case sendResponse: SendResponse =>
           s"Sending ${requestHeader.apiKey} response to client ${requestHeader.clientId} of ${sendResponse.responseSend.size} bytes."
@@ -366,6 +376,7 @@ class RequestChannel(val queueSize: Int,
       trace(message)
     }
 
+    // 2、通过响应类型匹配对应的处理器进行处理
     response match {
       // We should only send one of the following per request
       case _: SendResponse | _: NoOpResponse | _: CloseConnectionResponse =>
@@ -378,20 +389,24 @@ class RequestChannel(val queueSize: Int,
       case _: StartThrottlingResponse | _: EndThrottlingResponse => ()
     }
 
+    // 3、从response中获取到要将response发送给哪个processor
     val processor = processors.get(response.processor)
     // The processor may be null if it was shutdown. In this case, the connections
     // are closed, so the response is dropped.
     if (processor != null) {
+      // 4、将响应消息放入到processor的responseQueue中
       processor.enqueueResponse(response)
     }
   }
 
   /** Get the next request or block until specified time has elapsed */
   def receiveRequest(timeout: Long): RequestChannel.BaseRequest =
+  // 从队列中获取请求
     requestQueue.poll(timeout, TimeUnit.MILLISECONDS)
 
   /** Get the next request or block until there is one */
   def receiveRequest(): RequestChannel.BaseRequest =
+  // 从队列中获取请求，阻塞式
     requestQueue.take()
 
   def updateErrorMetrics(apiKey: ApiKeys, errors: collection.Map[Errors, Integer]): Unit = {
@@ -431,6 +446,7 @@ object RequestMetrics {
   val ErrorsPerSec = "ErrorsPerSec"
 }
 
+// 请求指标对象
 class RequestMetrics(name: String) extends KafkaMetricsGroup {
 
   import RequestMetrics._

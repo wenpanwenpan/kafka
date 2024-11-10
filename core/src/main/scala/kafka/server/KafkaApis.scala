@@ -95,21 +95,21 @@ import kafka.coordinator.group.GroupOverview
 /**
  * Logic to handle the various Kafka requests
  */
-class KafkaApis(val requestChannel: RequestChannel,
-                val replicaManager: ReplicaManager,
-                val adminManager: AdminManager,
-                val groupCoordinator: GroupCoordinator,
-                val txnCoordinator: TransactionCoordinator,
-                val controller: KafkaController,
-                val zkClient: KafkaZkClient,
-                val brokerId: Int,
-                val config: KafkaConfig,
-                val metadataCache: MetadataCache,
-                val metrics: Metrics,
-                val authorizer: Option[Authorizer],
-                val quotas: QuotaManagers,
-                val fetchManager: FetchManager,
-                brokerTopicStats: BrokerTopicStats,
+class KafkaApis(val requestChannel: RequestChannel,// 请求通道
+                val replicaManager: ReplicaManager,// 副本管理器
+                val adminManager: AdminManager,// 主题、分区、配置等管理器
+                val groupCoordinator: GroupCoordinator,// 消费者组协调器
+                val txnCoordinator: TransactionCoordinator,// 事务协调器
+                val controller: KafkaController,// 控制器
+                val zkClient: KafkaZkClient,// zk客户端
+                val brokerId: Int,// broker的ID
+                val config: KafkaConfig,// kafka配置类
+                val metadataCache: MetadataCache,// 元数据缓存类
+                val metrics: Metrics,// 监听
+                val authorizer: Option[Authorizer],// 授权
+                val quotas: QuotaManagers,// 配额管理
+                val fetchManager: FetchManager,// 拉取管理器
+                brokerTopicStats: BrokerTopicStats,// topic状态
                 val clusterId: String,
                 time: Time,
                 val tokenManager: DelegationTokenManager,
@@ -118,6 +118,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   type FetchResponseStats = Map[TopicPartition, RecordConversionStats]
   this.logIdent = "[KafkaApi-%d] ".format(brokerId)
+  // zk client，3.x中被移除
   val adminZkClient = new AdminZkClient(zkClient)
   private val alterAclsPurgatory = new DelayedFuturePurgatory(purgatoryName = "AlterAcls", brokerId = config.brokerId)
 
@@ -134,62 +135,117 @@ class KafkaApis(val requestChannel: RequestChannel,
     try {
       trace(s"Handling request:${request.requestDesc(true)} from connection ${request.context.connectionId};" +
         s"securityProtocol:${request.context.securityProtocol},principal:${request.context.principal}")
+      // 根据请求头中的apiKey，分发到对应的处理方法
       request.header.apiKey match {
-        // 处理生产发来的消息
+        // 处理生产发来的消息请求，将消息写入kafka
         case ApiKeys.PRODUCE => handleProduceRequest(request)
+        // 处理消费者请求，从kafka读取消息
         case ApiKeys.FETCH => handleFetchRequest(request)
+        // 获取指定分区指定时间戳或指定偏移量的最近偏移量
         case ApiKeys.LIST_OFFSETS => handleListOffsetRequest(request)
+        // 获取kafka集群元数据信息
         case ApiKeys.METADATA => handleTopicMetadataRequest(request)
+        // 更改分区的leader或ISR
         case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request)
+        // 停止指定分区的复制
         case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request)
+        // 将kafka集群元数据信息更新到broker上
         case ApiKeys.UPDATE_METADATA => handleUpdateMetadataRequest(request)
+        // 控制broker的关机操作
         case ApiKeys.CONTROLLED_SHUTDOWN => handleControlledShutdownRequest(request)
+        // 将消费者组的偏移量提交到kafka中
         case ApiKeys.OFFSET_COMMIT => handleOffsetCommitRequest(request)
+        // 从kafka中获取消费者组当前的偏移量
         case ApiKeys.OFFSET_FETCH => handleOffsetFetchRequest(request)
+        // 查找并获取指定消费者组或事务的的协调器
         case ApiKeys.FIND_COORDINATOR => handleFindCoordinatorRequest(request)
+        // 让消费者加入指定的消费者组
         case ApiKeys.JOIN_GROUP => handleJoinGroupRequest(request)
+        // 消费者发送心跳给协调器，表明他仍然是活着的
         case ApiKeys.HEARTBEAT => handleHeartbeatRequest(request)
+        // 让消费者离开指定的消费者组
         case ApiKeys.LEAVE_GROUP => handleLeaveGroupRequest(request)
+        // 同步消费者组的状态
         case ApiKeys.SYNC_GROUP => handleSyncGroupRequest(request)
+        // 获取消费者组的描述信息
         case ApiKeys.DESCRIBE_GROUPS => handleDescribeGroupRequest(request)
+        // 列出所有消费者组
         case ApiKeys.LIST_GROUPS => handleListGroupsRequest(request)
+        // SASL握手请求，用于客户端认证
         case ApiKeys.SASL_HANDSHAKE => handleSaslHandshakeRequest(request)
+        // 获取支持的API版本信息
         case ApiKeys.API_VERSIONS => handleApiVersionsRequest(request)
+        // 创建新的topic
         case ApiKeys.CREATE_TOPICS => handleCreateTopicsRequest(request)
+        // 删除topic
         case ApiKeys.DELETE_TOPICS => handleDeleteTopicsRequest(request)
+        // 删除kafka中指定分区或多个分区的record
         case ApiKeys.DELETE_RECORDS => handleDeleteRecordsRequest(request)
+        // 初始化生产者ID
         case ApiKeys.INIT_PRODUCER_ID => handleInitProducerIdRequest(request)
+        // 获取指定分区中指定副本的最新偏移量
         case ApiKeys.OFFSET_FOR_LEADER_EPOCH => handleOffsetForLeaderEpochRequest(request)
+        // 将指定分区添加到事务中
         case ApiKeys.ADD_PARTITIONS_TO_TXN => handleAddPartitionToTxnRequest(request)
+        // 将消费者组的偏移量添加到事务中
         case ApiKeys.ADD_OFFSETS_TO_TXN => handleAddOffsetsToTxnRequest(request)
+        // 标识事务结束
         case ApiKeys.END_TXN => handleEndTxnRequest(request)
+        // 将事务标记写入kafka中
         case ApiKeys.WRITE_TXN_MARKERS => handleWriteTxnMarkersRequest(request)
+        // 将消费者组的偏移量提交到kafka中，同时提交事务ID
         case ApiKeys.TXN_OFFSET_COMMIT => handleTxnOffsetCommitRequest(request)
+        // 获取ACL列表
         case ApiKeys.DESCRIBE_ACLS => handleDescribeAcls(request)
+        // 创建一个新的ACL
         case ApiKeys.CREATE_ACLS => handleCreateAcls(request)
+        // 删除ACL
         case ApiKeys.DELETE_ACLS => handleDeleteAcls(request)
+        // 更改指定的配置项
         case ApiKeys.ALTER_CONFIGS => handleAlterConfigsRequest(request)
+        // 获取配置项的描述信息
         case ApiKeys.DESCRIBE_CONFIGS => handleDescribeConfigsRequest(request)
+        // 更改指定分区的日志目录
         case ApiKeys.ALTER_REPLICA_LOG_DIRS => handleAlterReplicaLogDirsRequest(request)
+        // 获取broker的日志目录
         case ApiKeys.DESCRIBE_LOG_DIRS => handleDescribeLogDirsRequest(request)
+        // SASL认证，这个用于服务端认证客户端
         case ApiKeys.SASL_AUTHENTICATE => handleSaslAuthenticateRequest(request)
+        // 为指定topic创建新分区
         case ApiKeys.CREATE_PARTITIONS => handleCreatePartitionsRequest(request)
+        // 创建代理令牌
         case ApiKeys.CREATE_DELEGATION_TOKEN => handleCreateTokenRequest(request)
+        // 续订代理令牌
         case ApiKeys.RENEW_DELEGATION_TOKEN => handleRenewTokenRequest(request)
+        // 代理令牌失效
         case ApiKeys.EXPIRE_DELEGATION_TOKEN => handleExpireTokenRequest(request)
+        // 获取代理令牌的描述信息
         case ApiKeys.DESCRIBE_DELEGATION_TOKEN => handleDescribeTokensRequest(request)
+        // 删除消费者组
         case ApiKeys.DELETE_GROUPS => handleDeleteGroupsRequest(request)
+        // 强制选择分区leader
         case ApiKeys.ELECT_LEADERS => handleElectReplicaLeader(request)
+        // 增量更改指定配置项
         case ApiKeys.INCREMENTAL_ALTER_CONFIGS => handleIncrementalAlterConfigsRequest(request)
+        // 在重新分配前更改分区分配
         case ApiKeys.ALTER_PARTITION_REASSIGNMENTS => handleAlterPartitionReassignmentsRequest(request)
+        // 获取正在进行的分区分配
         case ApiKeys.LIST_PARTITION_REASSIGNMENTS => handleListPartitionReassignmentsRequest(request)
+        // 删除指定的topic和分区的所有偏移量提交
         case ApiKeys.OFFSET_DELETE => handleOffsetDeleteRequest(request)
+        // 获取客户端配额信息
         case ApiKeys.DESCRIBE_CLIENT_QUOTAS => handleDescribeClientQuotasRequest(request)
+        // 更改客户端配额信息
         case ApiKeys.ALTER_CLIENT_QUOTAS => handleAlterClientQuotasRequest(request)
+        // 获取SCRAM 凭据描述信息
         case ApiKeys.DESCRIBE_USER_SCRAM_CREDENTIALS => handleDescribeUserScramCredentialsRequest(request)
+        // 更改指定用户的SCRAM 凭据
         case ApiKeys.ALTER_USER_SCRAM_CREDENTIALS => handleAlterUserScramCredentialsRequest(request)
+        // 更改分区ISR集
         case ApiKeys.ALTER_ISR => handleAlterIsrRequest(request)
+        // 更新broker的支持特性
         case ApiKeys.UPDATE_FEATURES => handleUpdateFeatures(request)
+        // 下面这4个是raft模块的逻辑，但是这里要关闭与客户端的连接
         // Until we are ready to integrate the Raft layer, these APIs are treated as
         // unexpected and we just close the connection.
         case ApiKeys.VOTE => closeConnection(request, util.Collections.emptyMap())
@@ -507,9 +563,11 @@ class KafkaApis(val requestChannel: RequestChannel,
    * Handle a produce request
    */
   def handleProduceRequest(request: RequestChannel.Request): Unit = {
+    // 1、获取生产者发送的请求体信息
     val produceRequest = request.body[ProduceRequest]
     val numBytesAppended = request.header.toStruct.sizeOf + request.sizeOfBodyInBytes
 
+    // 2、如果请求中包含了事务性记录，则需要授权操作
     if (produceRequest.hasTransactionalRecords) {
       val isAuthorizedTransactional = produceRequest.transactionalId != null &&
         authorize(request.context, WRITE, TRANSACTIONAL_ID, produceRequest.transactionalId)
@@ -533,14 +591,17 @@ class KafkaApis(val requestChannel: RequestChannel,
     val authorizedRequestInfo = mutable.Map[TopicPartition, MemoryRecords]()
     val authorizedTopics = filterByAuthorized(request.context, WRITE, TOPIC, produceRecords)(_._1.topic)
 
-    // 遍历生产者发送过来的消息集合，按照topic 分区进行分组
+    // 3、遍历生产者发送过来的消息集合，对其进行授权和验证操作，按照topic 分区进行分组
     for ((topicPartition, memoryRecords) <- produceRecords) {
-      if (!authorizedTopics.contains(topicPartition.topic))
+      // 如果分区记录属于未授权主题，则将其添加到未授权主题集合中
+      if (!authorizedTopics.contains(topicPartition.topic)) {
         unauthorizedTopicResponses += topicPartition -> new PartitionResponse(Errors.TOPIC_AUTHORIZATION_FAILED)
-      else if (!metadataCache.contains(topicPartition))
+        // 如果分区记录所属的topic不存在，则将其添加到不存在主题集合中
+      } else if (!metadataCache.contains(topicPartition))
         nonExistingTopicResponses += topicPartition -> new PartitionResponse(Errors.UNKNOWN_TOPIC_OR_PARTITION)
       else
         try {
+          // 分区记录验证通过，则将其添加到授权请求集合中
           ProduceRequest.validateRecords(request.header.apiVersion, memoryRecords)
           authorizedRequestInfo += (topicPartition -> memoryRecords)
         } catch {
@@ -549,11 +610,12 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
     }
 
-    // the callback for sending a produce response
+    // the callback for sending a produce response 处理完成消息后，将response写回调对应的processor回调方法
     def sendResponseCallback(responseStatus: Map[TopicPartition, PartitionResponse]): Unit = {
       val mergedResponseStatus = responseStatus ++ unauthorizedTopicResponses ++ nonExistingTopicResponses ++ invalidRequestResponses
       var errorInResponse = false
 
+      // 打印日志
       mergedResponseStatus.forKeyValue { (topicPartition, status) =>
         if (status.error != Errors.NONE) {
           errorInResponse = true
@@ -584,6 +646,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
 
       // Send the response immediately. In case of throttling, the channel has already been muted.
+      // 客户端指定了 ack == 0
       if (produceRequest.acks == 0) {
         // no operation needed if producer request.required.acks = 0; however, if there is any error in handling
         // the request, since no response is expected by the producer, the server will close socket server so that
@@ -597,6 +660,7 @@ class KafkaApis(val requestChannel: RequestChannel,
               s"from client id ${request.header.clientId} with ack=0\n" +
               s"Topic and partition to exceptions: $exceptionsSummary"
           )
+          // 关闭连接
           closeConnection(request, new ProduceResponse(mergedResponseStatus.asJava).errorCounts)
         } else {
           // Note that although request throttling is exempt for acks == 0, the channel may be throttled due to
@@ -604,6 +668,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           sendNoOpResponseExemptThrottle(request)
         }
       } else {
+        // 【重要】response写回给对应的processor
         sendResponse(request, Some(new ProduceResponse(mergedResponseStatus.asJava, maxThrottleTimeMs)), None)
       }
     }
@@ -614,6 +679,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
     }
 
+    // 没有认证通过的数据，则响应空
     if (authorizedRequestInfo.isEmpty)
       sendResponseCallback(Map.empty)
     else {
@@ -626,8 +692,9 @@ class KafkaApis(val requestChannel: RequestChannel,
         requiredAcks = produceRequest.acks,
         internalTopicsAllowed = internalTopicsAllowed,
         origin = AppendOrigin.Client,
-        // 分组好的待写入到对应分区的消息记录
+        // 【重要】分组好的待写入到对应分区的消息记录，注意：这里的数据是以topic分区维度来分组的
         entriesPerPartition = authorizedRequestInfo,
+        // 【重要】数据写入到log后，需要将response回给processor，最后processor再写回给client，就是通过这个回调方法实现的
         responseCallback = sendResponseCallback,
         recordConversionStatsCallback = processingStatsCallback)
 
@@ -3352,17 +3419,22 @@ class KafkaApis(val requestChannel: RequestChannel,
     // Update error metrics for each error code in the response including Errors.NONE
     responseOpt.foreach(response => requestChannel.updateErrorMetrics(request.header.apiKey, response.errorCounts.asScala))
 
+    // 1、匹配响应类型
     val response = responseOpt match {
+      // 响应不为None
       case Some(response) =>
+        // 基于response构建响应数据
         val responseSend = request.context.buildResponse(response)
         val responseString =
           if (RequestChannel.isRequestLoggingEnabled) Some(response.toString(request.context.apiVersion))
           else None
         new RequestChannel.SendResponse(request, responseSend, responseString, onComplete)
       case None =>
+        // 否则构建误操作响应
         new RequestChannel.NoOpResponse(request)
     }
 
+    // 2、将响应信息交个 requestChannel，最终由 RequestChannel 发回给对应的processor，然后由processor响应给对应的客户端
     requestChannel.sendResponse(response)
   }
 
