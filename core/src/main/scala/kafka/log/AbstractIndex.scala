@@ -107,6 +107,7 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
   protected val lock = new ReentrantLock
 
   @volatile
+  // mmap 就是映射的底层索引文件
   protected var mmap: MappedByteBuffer = {
     val newlyCreated = file.createNewFile()
     val raf = if (writable) new RandomAccessFile(file, "rw") else new RandomAccessFile(file, "r")
@@ -376,14 +377,18 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
     if(_entries == 0)
       return (-1, -1)
 
+    // 二分查找算法
     def binarySearch(begin: Int, end: Int) : (Int, Int) = {
       // binary search for the entry
       var lo = begin
       var hi = end
       while(lo < hi) {
         val mid = (lo + hi + 1) >>> 1
+        // 加载第 mid 个槽位的索引项（绝对偏移量，物理位置）
         val found = parseEntry(idx, mid)
+        // 比较找到的索引项和目标值（target）的大小（大于0表示中点值大于目标值，小于0表示中点值小于目标值，等于0表示等于目标值）
         val compareResult = compareIndexEntry(found, target, searchEntity)
+        // 大于0说明中点值大于目标值
         if(compareResult > 0)
           hi = mid - 1
         else if(compareResult < 0)
@@ -394,16 +399,21 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
       (lo, if (lo == _entries - 1) -1 else lo + 1)
     }
 
+    // 热区第一条索引项
     val firstHotEntry = Math.max(0, _entries - 1 - _warmEntries)
     // check if the target offset is in the warm section of the index
+    // 在热区进行查找
     if(compareIndexEntry(parseEntry(idx, firstHotEntry), target, searchEntity) < 0) {
+      // 从热区第一条记录到热区最后一条记录之间的索引项进行查找
       return binarySearch(firstHotEntry, _entries - 1)
     }
 
     // check if the target offset is smaller than the least offset
+    // 如果目标值比索引文件里第一条记录都小，那么说明该索引文件里不存在满足大于等于target的索引项，直接返回-1
     if(compareIndexEntry(parseEntry(idx, 0), target, searchEntity) > 0)
       return (-1, 0)
 
+    // 在冷区进行查找（0 到 热区第一条记录）
     binarySearch(0, firstHotEntry)
   }
 

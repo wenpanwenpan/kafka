@@ -97,11 +97,11 @@ public class FileLogInputStream implements LogInputStream<FileLogInputStream.Fil
      * is that entries will generally no longer be readable when the underlying channel is closed.
      */
     public abstract static class FileChannelRecordBatch extends AbstractRecordBatch {
-        protected final long offset;
+        protected final long offset; // 偏移量
         protected final byte magic;
         protected final FileRecords fileRecords;
         protected final int position;
-        protected final int batchSize;
+        protected final int batchSize; // 该批次的大小
 
         private RecordBatch fullBatch;
         private RecordBatch batchHeader;

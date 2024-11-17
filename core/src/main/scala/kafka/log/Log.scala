@@ -263,6 +263,7 @@ class Log(@volatile private var _dir: File,
   /* last time it was flushed */
   private val lastFlushedTime = new AtomicLong(time.milliseconds)
 
+  // 这个就是 LEO (log end offset)
   @volatile private var nextOffsetMetadata: LogOffsetMetadata = _
 
   /* The earliest offset which is part of an incomplete transaction. This is used to compute the
@@ -283,9 +284,10 @@ class Log(@volatile private var _dir: File,
    * equals the log end offset (which may never happen for a partition under consistent load). This is needed to
    * prevent the log start offset (which is exposed in fetch responses) from getting ahead of the high watermark.
    */
+  // 这个就是高水位 hw
   @volatile private var highWatermarkMetadata: LogOffsetMetadata = LogOffsetMetadata(logStartOffset)
 
-  /* the actual segments of the log log管理的多个logSegment，用跳跃表结构来承载，key是baseOffset，value是LogSegment对象*/
+  /* the actual segments of the log log 【重要】管理的多个logSegment，用跳跃表结构来承载，key是baseOffset，value是LogSegment对象*/
   private val segments: ConcurrentNavigableMap[java.lang.Long, LogSegment] = new ConcurrentSkipListMap[java.lang.Long, LogSegment]
 
   // Visible for testing
@@ -297,9 +299,10 @@ class Log(@volatile private var _dir: File,
 
     initializeLeaderEpochCache()
 
+    // 加载日志段
     val nextOffset = loadSegments()
 
-    /* Calculate the offset of the next message */
+    /* Calculate the offset of the next message，通过加载的日志段的结果，计算出下一个消息的offset，以及当前段的段大小和基础偏移量 */
     nextOffsetMetadata = LogOffsetMetadata(nextOffset, activeSegment.baseOffset, activeSegment.size)
 
     leaderEpochCache.foreach(_.truncateFromEnd(nextOffsetMetadata.messageOffset))
@@ -771,12 +774,14 @@ class Log(@volatile private var _dir: File,
     }
   }
 
+  // 更新LEO
   private def updateLogEndOffset(offset: Long): Unit = {
     nextOffsetMetadata = LogOffsetMetadata(offset, activeSegment.baseOffset, activeSegment.size)
 
     // Update the high watermark in case it has gotten ahead of the log end offset following a truncation
     // or if a new segment has been rolled and the offset metadata needs to be updated.
     if (highWatermark >= offset) {
+      // 更新高水位元数据
       updateHighWatermarkMetadata(nextOffsetMetadata)
     }
 
@@ -1123,6 +1128,7 @@ class Log(@volatile private var _dir: File,
           appendInfo.firstOffset = Some(offset.value)
           val now = time.milliseconds
           // 5、对message做进一步的验证：消息格式转换，调整magic的值、修改时间戳等操作，并为message分配offset
+          // 【重要】这里就会更改message的offset、magic、时间戳等
           val validateAndOffsetAssignResult = try {
             LogValidator.validateMessagesAndAssignOffsets(validRecords,
               topicPartition,
@@ -1149,7 +1155,7 @@ class Log(@volatile private var _dir: File,
           appendInfo.maxTimestamp = validateAndOffsetAssignResult.maxTimestamp
           // 最大时间戳的offset
           appendInfo.offsetOfMaxTimestamp = validateAndOffsetAssignResult.shallowOffsetOfMaxTimestamp
-          // 更新lastOffset
+          // 更新lastOffset（可以看到offset的初始值是用当前LEO的值 - 1，经过上面第五步后，该值就会变成当前写入的最后一条消息的offset）
           appendInfo.lastOffset = offset.value - 1
           appendInfo.recordConversionStats = validateAndOffsetAssignResult.recordConversionStats
           // 在新版本的kafka中每条消息都有一个对应的时间戳记录，producer端可以设置这个字段message.timestamp.type来选择timestamp的类型
@@ -1239,15 +1245,17 @@ class Log(@volatile private var _dir: File,
           logOffsetMetadata, validRecords, origin)
 
         maybeDuplicate.foreach { duplicate =>
+          // 消息集合里第一条消息的偏移量
           appendInfo.firstOffset = Some(duplicate.firstOffset)
-          appendInfo.lastOffset = duplicate.lastOffset
+          // 消息集合里最后一条消息的偏移量
+          appendInfo.lastOffset = duplicate.lastOffset // 可能修改lastOffset的值
           appendInfo.logAppendTime = duplicate.timestamp
           appendInfo.logStartOffset = logStartOffset
           return appendInfo
         }
 
-        // 11、执行真正的消息写入操作，主要调用日志段对象的append方法实现
-        segment.append(largestOffset = appendInfo.lastOffset,// 最大位移
+        // 11、【重要】执行真正的消息写入操作，主要调用日志段对象的append方法实现
+        segment.append(largestOffset = appendInfo.lastOffset,// 最大位移（从上面可以看到这个lastOffset是基于leo值减一，然后根据消息的数据量来计算得到的）
           largestTimestamp = appendInfo.maxTimestamp,// 最大时间戳
           shallowOffsetOfMaxTimestamp = appendInfo.offsetOfMaxTimestamp, // 最大时间戳对应消息的位移
           records = validRecords) // 真正要写入的消息集合
@@ -1367,6 +1375,7 @@ class Log(@volatile private var _dir: File,
     val completedTxns = ListBuffer.empty[CompletedTxn]
     var relativePositionInSegment = appendOffsetMetadata.relativePositionInSegment
 
+    // 遍历待写入的消息里的每个批次
     for (batch <- records.batches.asScala) {
       if (batch.hasProducerId) {
         val maybeLastEntry = producerStateManager.lastEntry(batch.producerId)
@@ -1390,6 +1399,7 @@ class Log(@volatile private var _dir: File,
         maybeCompletedTxn.foreach(completedTxns += _)
       }
 
+      // 段的相对位置增加
       relativePositionInSegment += batch.sizeInBytes
     }
     (updatedProducers, completedTxns.toList, None)

@@ -87,12 +87,17 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
    */
   def lookup(targetOffset: Long): OffsetPosition = {
     maybeLock(lock) {
+      // mmap 就是索引文件的映射，这里duplicate一份
       val idx = mmap.duplicate
+      // 二分查找定位在索引项中的槽位（这一步定位槽位非常关键）
       val slot = largestLowerBoundSlotFor(idx, targetOffset, IndexSearchType.KEY)
+      // 槽位等于-1，说明在该索引文件里没有找到大于等于targetOffset的索引项
       if(slot == -1)
         OffsetPosition(baseOffset, 0)
-      else
+      else {
+        // 根据槽位读取索引项
         parseEntry(idx, slot)
+      }
     }
   }
 
@@ -112,11 +117,14 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
     }
   }
 
+  // 根据槽位，从索引文件中解析出对应的相对偏移量
   private def relativeOffset(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize)
 
+  // 根据槽位，从索引文件中解析出对应的物理位置
   private def physical(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize + 4)
 
   override protected def parseEntry(buffer: ByteBuffer, n: Int): OffsetPosition = {
+    // key就是绝对偏移量，value是该偏移量对应的物理位置
     OffsetPosition(baseOffset + relativeOffset(buffer, n), physical(buffer, n))
   }
 
@@ -141,12 +149,18 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
   def append(offset: Long, position: Int): Unit = {
     inLock(lock) {
       require(!isFull, "Attempt to append to a full index (size = " + _entries + ").")
+      // 没有索引项或者索引项的最后一个偏移量小于目标偏移量（保证递增特性）
       if (_entries == 0 || offset > _lastOffset) {
         trace(s"Adding index entry $offset => $position to ${file.getAbsolutePath}")
+        // 将偏移量转为相对偏移量并写入索引文件
         mmap.putInt(relativeOffset(offset))
+        // 将偏移量对应的物理位置写入索引文件
         mmap.putInt(position)
+        // 索引项记录+1
         _entries += 1
+        // 更新最大偏移量为当前offset
         _lastOffset = offset
+        // 检查一下，索引项的数量 * 索引项的大小一定是要等于索引文件的当前位置
         require(_entries * entrySize == mmap.position(), s"$entries entries but file position in index is ${mmap.position()}.")
       } else {
         throw new InvalidOffsetException(s"Attempt to append an offset ($offset) to position $entries no larger than" +

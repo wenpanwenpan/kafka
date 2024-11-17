@@ -94,11 +94,13 @@ private[log] object LogValidator extends Logging {
                                                     brokerTopicStats: BrokerTopicStats): ValidationAndOffsetAssignResult = {
     if (sourceCodec == NoCompressionCodec && targetCodec == NoCompressionCodec) {
       // check the magic value
-      if (!records.hasMatchingMagic(magic))
+      if (!records.hasMatchingMagic(magic)) {
+        // 这里可能会增加offsetCounter的值
         convertAndAssignOffsetsNonCompressed(records, topicPartition, offsetCounter, compactedTopic, time, now, timestampType,
           timestampDiffMaxMs, magic, partitionLeaderEpoch, origin, brokerTopicStats)
-      else
+      } else
         // Do in-place validation, offset assignment and maybe set timestamp
+        // 这里可能会增加offsetCounter的值
         assignOffsetsNonCompressed(records, topicPartition, offsetCounter, now, compactedTopic, timestampType, timestampDiffMaxMs,
           partitionLeaderEpoch, origin, magic, brokerTopicStats)
     } else {
@@ -234,16 +236,21 @@ private[log] object LogValidator extends Logging {
 
     val firstBatch = getFirstBatchAndMaybeValidateNoMoreBatches(records, NoCompressionCodec)
 
+    // 遍历每个消息批次
     records.batches.forEach { batch =>
+      // 验证批次
       validateBatch(topicPartition, firstBatch, batch, origin, toMagicValue, brokerTopicStats)
 
       val recordErrors = new ArrayBuffer[ApiRecordError](0)
       for ((record, batchIndex) <- batch.asScala.view.zipWithIndex) {
+        // 验证批次消息
         validateRecord(batch, topicPartition, record, batchIndex, now, timestampType,
           timestampDiffMaxMs, compactedTopic, brokerTopicStats).foreach(recordError => recordErrors += recordError)
         // we fail the batch if any record fails, so we stop appending if any record fails
-        if (recordErrors.isEmpty)
+        if (recordErrors.isEmpty) {
+          // 将 offsetCounter 的值+1
           builder.appendWithOffset(offsetCounter.getAndIncrement(), record)
+        }
       }
 
       processRecordErrors(recordErrors)
@@ -279,6 +286,7 @@ private[log] object LogValidator extends Logging {
 
     val firstBatch = getFirstBatchAndMaybeValidateNoMoreBatches(records, NoCompressionCodec)
 
+    // 遍历每个批次
     records.batches.forEach { batch =>
       validateBatch(topicPartition, firstBatch, batch, origin, magic, brokerTopicStats)
 
@@ -288,10 +296,12 @@ private[log] object LogValidator extends Logging {
       val recordErrors = new ArrayBuffer[ApiRecordError](0)
       // this is a hot path and we want to avoid any unnecessary allocations.
       var batchIndex = 0
+      // 遍历批次里的每条记录
       batch.forEach { record =>
         validateRecord(batch, topicPartition, record, batchIndex, now, timestampType,
           timestampDiffMaxMs, compactedTopic, brokerTopicStats).foreach(recordError => recordErrors += recordError)
 
+        // 将 offsetCounter 的值+1
         val offset = offsetCounter.getAndIncrement()
         if (batch.magic > RecordBatch.MAGIC_VALUE_V0 && record.timestamp > maxBatchTimestamp) {
           maxBatchTimestamp = record.timestamp

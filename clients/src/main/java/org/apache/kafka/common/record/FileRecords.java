@@ -41,15 +41,21 @@ import java.util.concurrent.atomic.AtomicInteger;
  * instance to enable slicing a range of the log records.
  */
 public class FileRecords extends AbstractRecords implements Closeable {
+    // 是否为分片，isSlice为false，说明是原始的日志文件，是可以追加写入的，如果为true，则表示是截取的日志的一个片段（比如消费者读取消息时）
     private final boolean isSlice;
+    // 分片的开始位置
     private final int start;
+    // 分片的结束位置
     private final int end;
 
+    // 组成fileRecords的消息批次
     private final Iterable<FileLogInputStream.FileChannelRecordBatch> batches;
 
     // mutable state
-    private final AtomicInteger size;
+    private final AtomicInteger size; // 如果是分片，则表示分片的大小(end -start)，如果不是分片则表示整个日志文件的大小
+    // 文件通道，用于读写对应的日志文件
     private final FileChannel channel;
+    // 磁盘上的日志文件
     private volatile File file;
 
     /**
@@ -129,6 +135,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * If the size is beyond the end of the file, the end will be based on the size of the file at the time of the read.
      *
      * If this message set is already sliced, the position will be taken relative to that slicing.
+     * 从给定位置以及给定大小创建一个新的 FileRecords 对象
      *
      * @param position The start position to begin the read from
      * @param size The number of bytes after the start position to include
@@ -136,8 +143,10 @@ public class FileRecords extends AbstractRecords implements Closeable {
      */
     public FileRecords slice(int position, int size) throws IOException {
         // Cache current size in case concurrent write changes it
+        // 1、先缓存当前对象的大小，以防止写操作更改他
         int currentSizeInBytes = sizeInBytes();
 
+        // 2、校验位置和大小的合法性
         if (position < 0)
             throw new IllegalArgumentException("Invalid position: " + position + " in read from " + this);
         if (position > currentSizeInBytes - start)
@@ -145,10 +154,12 @@ public class FileRecords extends AbstractRecords implements Closeable {
         if (size < 0)
             throw new IllegalArgumentException("Invalid size: " + size + " in read from " + this);
 
+        // 3、计算新文件记录对象的结束位置
         int end = this.start + position + size;
         // handle integer overflow or if end is beyond the end of the file
         if (end < 0 || end > start + currentSizeInBytes)
             end = start + currentSizeInBytes;
+        // 4、创建新的记录对象
         return new FileRecords(file, channel, this.start + position, end, true);
     }
 
@@ -165,6 +176,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
                     " bytes is too large for segment with current file position at " + size.get());
         // 将 records 数据写入到文件channel中，返回写入到字节数
         int written = records.writeFullyTo(channel);
+        // 计算写入了多少字节的消息
         size.getAndAdd(written);
         return written;
     }
@@ -173,6 +185,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * Commit all written data to the physical disk
      */
     public void flush() throws IOException {
+        // 将写入到操作系统pageCache中的数据刷盘
         channel.force(true);
     }
 
@@ -237,18 +250,22 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * update of the files mtime, so truncate is only performed if the targetSize is smaller than the
      * size of the underlying FileChannel.
      * It is expected that no other threads will do writes to the log when this function is called.
-     * @param targetSize The size to truncate to. Must be between 0 and sizeInBytes.
-     * @return The number of bytes truncated off
+     * 将日志截断至指定的大小
+     * @param targetSize The size to truncate to. Must be between 0 and sizeInBytes. 截断后的目标大小
+     * @return The number of bytes truncated off 返回截断前和截断后的大小差值
      */
     public int truncateTo(int targetSize) throws IOException {
         int originalSize = sizeInBytes();
+        // 1、目标大小不能超过原始大小或小于0
         if (targetSize > originalSize || targetSize < 0)
             throw new KafkaException("Attempt to truncate log segment " + file + " to " + targetSize + " bytes failed, " +
                     " size of this log segment is " + originalSize + " bytes.");
+        // 2、如果目标大小小于文件大小，则截断文件
         if (targetSize < (int) channel.size()) {
             channel.truncate(targetSize);
             size.set(targetSize);
         }
+        // 返回截断前和截断后的大小差值
         return originalSize - targetSize;
     }
 
@@ -294,16 +311,23 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * Search forward for the file position of the last offset that is greater than or equal to the target offset
      * and return its physical position and the size of the message (including log overhead) at the returned offset. If
      * no such offsets are found, return null.
+     * 从 startingPosition 位置开始查找文件，找到大于等于targetOffset 的 batch（一个批次里可能会有多条消息）
      *
      * @param targetOffset The offset to search for.
      * @param startingPosition The starting position in the file to begin searching from.
      */
     public LogOffsetPosition searchForOffsetWithSize(long targetOffset, int startingPosition) {
+        // 从 startingPosition 位置开始读取log数据文件
+        // 【重要】这里是按批次读取的，并不是只读了一条消息？？？？
         for (FileChannelRecordBatch batch : batchesFrom(startingPosition)) {
+            // 获取批次的最大偏移量(也就是当前批次最后一个偏移量)
             long offset = batch.lastOffset();
+            // 找到大于等于targetOffset的batch
             if (offset >= targetOffset)
+                // 返回offset，批次的物理位置，批次大小
                 return new LogOffsetPosition(offset, batch.position(), batch.sizeInBytes());
         }
+        // 未找到，直接返回null
         return null;
     }
 
