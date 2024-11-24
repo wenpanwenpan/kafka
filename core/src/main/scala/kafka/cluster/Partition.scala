@@ -1093,6 +1093,7 @@ class Partition(val topicPartition: TopicPartition,
     info.copy(leaderHwChange = if (leaderHWIncremented) LeaderHwChange.Increased else LeaderHwChange.Same)
   }
 
+  // 【重要】读取消息
   def readRecords(lastFetchedEpoch: Optional[Integer],
                   fetchOffset: Long,
                   currentLeaderEpoch: Optional[Integer],
@@ -1149,7 +1150,9 @@ class Partition(val topicPartition: TopicPartition,
       }
     }
 
+    // 【重要】调用log对象，从对应分区文件中读取消息集合
     val fetchedData = localLog.read(fetchOffset, maxBytes, fetchIsolation, minOneMessage)
+    // 返回读取结果
     LogReadInfo(
       fetchedData = fetchedData,
       divergingEpoch = None,

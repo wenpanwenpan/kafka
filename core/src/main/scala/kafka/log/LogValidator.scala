@@ -258,6 +258,7 @@ private[log] object LogValidator extends Logging {
 
     val convertedRecords = builder.build()
 
+    // 在这里计算的的最大时间戳以及最大时间戳对应的位移
     val info = builder.info
     val recordConversionStats = new RecordConversionStats(builder.uncompressedBytesWritten,
       builder.numRecords, time.nanoseconds - startNanos)

@@ -21,6 +21,7 @@ import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import org.apache.kafka.common.internals.FatalExitError
 
+// kafka中对于线程的统一抽象，继承了JDK 中的Thread，并且提供了线程的启动、关闭等方法
 abstract class ShutdownableThread(val name: String, val isInterruptible: Boolean = true)
         extends Thread(name) with Logging {
   this.setDaemon(false)
@@ -88,12 +89,16 @@ abstract class ShutdownableThread(val name: String, val isInterruptible: Boolean
    */
   def doWork(): Unit
 
+  // 线程核心方法
   override def run(): Unit = {
     isStarted = true
     info("Starting")
     try {
-      while (isRunning)
+      // 死循环的运行
+      while (isRunning) {
+        // 具体线程工作由子类实现
         doWork()
+      }
     } catch {
       case e: FatalExitError =>
         shutdownInitiated.countDown()

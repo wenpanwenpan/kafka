@@ -48,6 +48,7 @@ object ControllerChannelManager {
   val RequestRateAndQueueTimeMetricName = "RequestRateAndQueueTimeMs"
 }
 
+// 负责controller和多个broker进行通信管理
 class ControllerChannelManager(controllerContext: ControllerContext,
                                config: KafkaConfig,
                                time: Time,
@@ -56,6 +57,7 @@ class ControllerChannelManager(controllerContext: ControllerContext,
                                threadNamePrefix: Option[String] = None) extends Logging with KafkaMetricsGroup {
   import ControllerChannelManager._
 
+  // 【很重要】controller管理的所有broker信息
   protected val brokerStateInfo = new HashMap[Int, ControllerBrokerStateInfo]
   private val brokerLock = new Object
   this.logIdent = "[Channel manager on controller " + config.brokerId + "]: "
@@ -213,6 +215,7 @@ class ControllerChannelManager(controllerContext: ControllerContext,
 case class QueueItem(apiKey: ApiKeys, request: AbstractControlRequest.Builder[_ <: AbstractControlRequest],
                      callback: AbstractResponse => Unit, enqueueTimeMs: Long)
 
+// 该线程负责取出队列里的请求，然后发送给对应的broker
 class RequestSendThread(val controllerId: Int,
                         val controllerContext: ControllerContext,
                         val queue: BlockingQueue[QueueItem],
@@ -664,9 +667,9 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
 }
 
 case class ControllerBrokerStateInfo(networkClient: NetworkClient,
-                                     brokerNode: Node,
-                                     messageQueue: BlockingQueue[QueueItem],
-                                     requestSendThread: RequestSendThread,
+                                     brokerNode: Node,// broker的node信息
+                                     messageQueue: BlockingQueue[QueueItem], // 和broker通信时使用的队列，解耦
+                                     requestSendThread: RequestSendThread,// 和某个broker通信的线程
                                      queueSizeGauge: Gauge[Int],
                                      requestRateAndTimeMetrics: Timer,
                                      reconfigurableChannelBuilder: Option[Reconfigurable])

@@ -72,6 +72,7 @@ case class ReplicaAssignment private (replicas: Seq[Int],
     s"removingReplicas=${removingReplicas.mkString(",")})"
 }
 
+// 集群元数据
 class ControllerContext {
   val stats = new ControllerStats
   var offlinePartitionCount = 0

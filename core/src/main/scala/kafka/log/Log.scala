@@ -284,15 +284,18 @@ class Log(@volatile private var _dir: File,
    * equals the log end offset (which may never happen for a partition under consistent load). This is needed to
    * prevent the log start offset (which is exposed in fetch responses) from getting ahead of the high watermark.
    */
-  // 这个就是高水位 hw
+  // 这个就是高水位 hw，他的初始值等于 logStartOffset
   @volatile private var highWatermarkMetadata: LogOffsetMetadata = LogOffsetMetadata(logStartOffset)
 
-  /* the actual segments of the log log 【重要】管理的多个logSegment，用跳跃表结构来承载，key是baseOffset，value是LogSegment对象*/
+  /* the actual segments of the log log 【重要】管理的多个logSegment，用跳跃表结构来承载，key是baseOffset，value是LogSegment对象
+  * 在broker启动时由log来组织并加载这些logSegment到内存中
+  * */
   private val segments: ConcurrentNavigableMap[java.lang.Long, LogSegment] = new ConcurrentSkipListMap[java.lang.Long, LogSegment]
 
   // Visible for testing
   @volatile var leaderEpochCache: Option[LeaderEpochFileCache] = None
 
+  // 启动时调用
   locally {
     // create the log directory if it doesn't exist
     Files.createDirectories(dir.toPath)
@@ -367,6 +370,7 @@ class Log(@volatile private var _dir: File,
   /**
    * Update high watermark with offset metadata. The new high watermark will be lower
    * bounded by the log start offset and upper bounded by the log end offset.
+   * 更新高水位值，该方法用于follower从leader获取到消息后更新follower的高水位值，高水位一定位于[LSO，LEO]之间
    *
    * @param highWatermarkMetadata the suggested high watermark with offset metadata
    * @return the updated high watermark offset
@@ -381,6 +385,7 @@ class Log(@volatile private var _dir: File,
       highWatermarkMetadata
     }
 
+    // 更新高水位
     updateHighWatermarkMetadata(newHighWatermarkMetadata)
     newHighWatermarkMetadata.messageOffset
   }
@@ -391,24 +396,29 @@ class Log(@volatile private var _dir: File,
    *
    * This method is intended to be used by the leader to update the high watermark after follower
    * fetch offsets have been updated.
+   * 该方法用于更新leader副本的高水位值，leader副本的高水位更新是需要条件的
    *
    * @return the old high watermark, if updated by the new value
    */
   def maybeIncrementHighWatermark(newHighWatermark: LogOffsetMetadata): Option[LogOffsetMetadata] = {
+    // 高水位不能超过LEO
     if (newHighWatermark.messageOffset > logEndOffset)
       throw new IllegalArgumentException(s"High watermark $newHighWatermark update exceeds current " +
         s"log end offset $logEndOffsetMetadata")
 
     lock.synchronized {
+      // 获取旧的高水位
       val oldHighWatermark = fetchHighWatermarkMetadata
 
       // Ensure that the high watermark increases monotonically. We also update the high watermark when the new
       // offset metadata is on a newer segment, which occurs whenever the log is rolled to a new segment.
       if (oldHighWatermark.messageOffset < newHighWatermark.messageOffset ||
         (oldHighWatermark.messageOffset == newHighWatermark.messageOffset && oldHighWatermark.onOlderSegment(newHighWatermark))) {
+        // 更新
         updateHighWatermarkMetadata(newHighWatermark)
         Some(oldHighWatermark)
       } else {
+        // 新的hw不大于旧的hw，则返回null
         None
       }
     }
@@ -417,11 +427,14 @@ class Log(@volatile private var _dir: File,
   /**
    * Get the offset and metadata for the current high watermark. If offset metadata is not
    * known, this will do a lookup in the index and cache the result.
+   * 读取高水位
    */
   private def fetchHighWatermarkMetadata: LogOffsetMetadata = {
+    // 1、读取时确保日志不能关闭
     checkIfMemoryMappedBufferClosed()
-
+    // 2、保存当前hw的值到本地变量，防止多线程干扰
     val offsetMetadata = highWatermarkMetadata
+    // 3、当没有获取到完整的高水位元数据
     if (offsetMetadata.messageOffsetOnly) {
       lock.synchronized {
         val fullOffset = convertToOffsetMetadataOrThrow(highWatermark)
@@ -429,11 +442,13 @@ class Log(@volatile private var _dir: File,
         fullOffset
       }
     } else {
+      // 4、否则直接返回
       offsetMetadata
     }
   }
 
   private def updateHighWatermarkMetadata(newHighWatermark: LogOffsetMetadata): Unit = {
+    // 高水位必须大于0
     if (newHighWatermark.messageOffset < 0)
       throw new IllegalArgumentException("High watermark offset should be non-negative")
 
@@ -441,9 +456,11 @@ class Log(@volatile private var _dir: File,
       if (newHighWatermark.messageOffset < highWatermarkMetadata.messageOffset) {
         warn(s"Non-monotonic update of high watermark from $highWatermarkMetadata to $newHighWatermark")
       }
-
+      // 赋值新的高水位
       highWatermarkMetadata = newHighWatermark
+      // 通知生产者的状态管理器更新高水位偏移量
       producerStateManager.onHighWatermarkUpdated(newHighWatermark.messageOffset)
+      // 尝试增加一个不稳定的偏移量值
       maybeIncrementFirstUnstableOffset()
     }
     trace(s"Setting high watermark $newHighWatermark")
@@ -633,17 +650,24 @@ class Log(@volatile private var _dir: File,
   private def loadSegmentFiles(): Unit = {
     // load segments in ascending order because transactional data from one segment may depend on the
     // segments that come before it
+    // 遍历日志目录下的每个文件，并且只处理file文件，不处理目录
     for (file <- dir.listFiles.sortBy(_.getName) if file.isFile) {
+      // 是索引文件
       if (isIndexFile(file)) {
         // if it is an index file, make sure it has a corresponding .log file
+        // 取文件名作为offset
         val offset = offsetFromFile(file)
+        // 加载对应的日志文件
         val logFile = Log.logFile(dir, offset)
+        // 如果日志文件不存在，则删除所以文件并告警
         if (!logFile.exists) {
           warn(s"Found an orphaned index file ${file.getAbsolutePath}, with no corresponding log file.")
           Files.deleteIfExists(file.toPath)
         }
+        // 是日志文件
       } else if (isLogFile(file)) {
         // if it's a log file, load the corresponding log segment
+        // 取文件名作为offset
         val baseOffset = offsetFromFile(file)
         val timeIndexFileNewlyCreated = !Log.timeIndexFile(dir, baseOffset).exists()
         val segment = LogSegment.open(dir = dir,
@@ -652,6 +676,7 @@ class Log(@volatile private var _dir: File,
           time = time,
           fileAlreadyExists = true)
 
+        // 对日志段进行检查，如果有问题就抛出异常，在catch中进行修复
         try segment.sanityCheck(timeIndexFileNewlyCreated)
         catch {
           case _: NoSuchFileException =>
@@ -663,6 +688,7 @@ class Log(@volatile private var _dir: File,
               s"to ${e.getMessage}}, recovering segment and rebuilding index files...")
             recoverSegment(segment)
         }
+        // 添加到segments跳跃表中管理
         addSegment(segment)
       }
     }
@@ -743,7 +769,9 @@ class Log(@volatile private var _dir: File,
       // loading of segments. In that case, we also need to close all segments that could have been left open in previous
       // call to loadSegmentFiles().
       logSegments.foreach(_.close())
+      // 情况日志段
       segments.clear()
+      // 重新加载日志段
       loadSegmentFiles()
     }
 
@@ -762,6 +790,7 @@ class Log(@volatile private var _dir: File,
       nextOffset
     } else {
        if (logSegments.isEmpty) {
+         // 将日志段添加到集合中
           addSegment(LogSegment.open(dir = dir,
             baseOffset = 0,
             config,

@@ -67,6 +67,7 @@ object KafkaController extends Logging {
   type UpdateFeaturesCallback = Either[ApiError, Map[String, ApiError]] => Unit
 }
 
+// kafka集群controller
 class KafkaController(val config: KafkaConfig,
                       zkClient: KafkaZkClient,
                       time: Time,
@@ -2371,9 +2372,10 @@ class KafkaController(val config: KafkaConfig,
     onControllerResignation()
   }
 
-
+  // 处理 Controller 事件
   override def process(event: ControllerEvent): Unit = {
     try {
+      // 根据事件类型匹配处理方法
       event match {
         case event: MockEvent =>
           // Used only in test cases
@@ -2564,6 +2566,7 @@ private[controller] class ControllerStats extends KafkaMetricsGroup {
 
 }
 
+// controller事件
 sealed trait ControllerEvent {
   def state: ControllerState
   // preempt() is not executed by `ControllerEventThread` but by the main thread.
@@ -2575,6 +2578,7 @@ case object ControllerChange extends ControllerEvent {
   override def preempt(): Unit = {}
 }
 
+// 重新选controller主节点事件
 case object Reelect extends ControllerEvent {
   override def state: ControllerState = ControllerState.ControllerChange
   override def preempt(): Unit = {}

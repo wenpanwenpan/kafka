@@ -261,6 +261,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
                 shallowOffsetOfMaxTimestamp = lastOffset;
             else
                 shallowOffsetOfMaxTimestamp = baseOffset;
+            // 取日志追加时间作为最大时间戳
             return new RecordsInfo(logAppendTime, shallowOffsetOfMaxTimestamp);
         } else if (maxTimestamp == RecordBatch.NO_TIMESTAMP) {
             return new RecordsInfo(RecordBatch.NO_TIMESTAMP, lastOffset);
@@ -896,8 +897,8 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     }
 
     public static class RecordsInfo {
-        public final long maxTimestamp;
-        public final long shallowOffsetOfMaxTimestamp;
+        public final long maxTimestamp; // 最大时间戳
+        public final long shallowOffsetOfMaxTimestamp; // 最大时间戳对应的位移
 
         public RecordsInfo(long maxTimestamp,
                            long shallowOffsetOfMaxTimestamp) {
