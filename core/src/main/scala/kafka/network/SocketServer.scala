@@ -115,12 +115,13 @@ class SocketServer(val config: KafkaConfig,
    * connections until server is fully initialized, e.g. to ensure that all credentials have been
    * loaded before authentications are performed. Incoming connections on this server are processed
    * when processors start up and invoke [[org.apache.kafka.common.network.Selector#poll]].
-   *
+   * 【重要】启动网络层
    * @param startProcessingRequests Flag indicating whether `Processor`s must be started.
    */
   def startup(startProcessingRequests: Boolean = true): Unit = {
     this.synchronized {
       connectionQuotas = new ConnectionQuotas(config, time, metrics)
+      // 创建控制面acceptor和processor
       createControlPlaneAcceptorAndProcessor(config.controlPlaneListener)
       createDataPlaneAcceptorsAndProcessors(config.numNetworkThreads, config.dataPlaneListeners)
       if (startProcessingRequests) {
@@ -181,7 +182,9 @@ class SocketServer(val config: KafkaConfig,
     info("Starting socket server acceptors and processors")
     this.synchronized {
       if (!startedProcessingRequests) {
+        // 开启控制面的processor和acceptor线程（处理kafka内部事务）
         startControlPlaneProcessorAndAcceptor(authorizerFutures)
+        // 开启数据面的processor和acceptor线程（处理正常的消息收发）
         startDataPlaneProcessorsAndAcceptors(authorizerFutures)
         startedProcessingRequests = true
       } else {
@@ -204,13 +207,16 @@ class SocketServer(val config: KafkaConfig,
     debug(s"Wait for authorizer to complete start up on listener ${endpoint.listenerName}")
     waitForAuthorizerFuture(acceptor, authorizerFutures)
     debug(s"Start processors on listener ${endpoint.listenerName}")
+    // 1、启动该acceptor下的多个processor
     acceptor.startProcessors(threadPrefix)
     debug(s"Start acceptor thread on listener ${endpoint.listenerName}")
     if (!acceptor.isStarted()) {
+      // 2、启动acceptor线程
       KafkaThread.nonDaemon(
         s"${threadPrefix}-kafka-socket-acceptor-${endpoint.listenerName}-${endpoint.securityProtocol}-${endpoint.port}",
         acceptor
       ).start()
+      // 3、等待启动完成
       acceptor.awaitStartup()
     }
     info(s"Started $threadPrefix acceptor and processor(s) for endpoint : ${endpoint.listenerName}")
@@ -246,21 +252,26 @@ class SocketServer(val config: KafkaConfig,
 
   private def endpoints = config.listeners.map(l => l.listenerName -> l).toMap
 
+  // 创建数据面acceptor和processor（acceptor可以理解为netty的boss，processor可以理解为netty的worker）
   private def createDataPlaneAcceptorsAndProcessors(dataProcessorsPerListener: Int,
                                                     endpoints: Seq[EndPoint]): Unit = {
     endpoints.foreach { endpoint =>
       connectionQuotas.addListener(config, endpoint.listenerName)
       val dataPlaneAcceptor = createAcceptor(endpoint, DataPlaneMetricPrefix)
+      // 创建数据面的processor
       addDataPlaneProcessors(dataPlaneAcceptor, endpoint, dataProcessorsPerListener)
       dataPlaneAcceptors.put(endpoint, dataPlaneAcceptor)
       info(s"Created data-plane acceptor and processors for endpoint : ${endpoint.listenerName}")
     }
   }
 
+  // 创建控制面acceptor和processor
   private def createControlPlaneAcceptorAndProcessor(endpointOpt: Option[EndPoint]): Unit = {
     endpointOpt.foreach { endpoint =>
       connectionQuotas.addListener(config, endpoint.listenerName)
+      // 控制面acceptor，用于处理kafka内部broker之间的连接请求
       val controlPlaneAcceptor = createAcceptor(endpoint, ControlPlaneMetricPrefix)
+      // 数据面processor，用于接收kafka内部broker之间的请求和响应
       val controlPlaneProcessor = newProcessor(nextProcessorId, controlPlaneRequestChannelOpt.get, connectionQuotas, endpoint.listenerName, endpoint.securityProtocol, memoryPool)
       controlPlaneAcceptorOpt = Some(controlPlaneAcceptor)
       controlPlaneProcessorOpt = Some(controlPlaneProcessor)
@@ -285,6 +296,7 @@ class SocketServer(val config: KafkaConfig,
     val securityProtocol = endpoint.securityProtocol
     val listenerProcessors = new ArrayBuffer[Processor]()
     for (_ <- 0 until newProcessorsPerListener) {
+      // 创建一个数据面的processor，一个processor可以理解为netty的一个worker
       val processor = newProcessor(nextProcessorId, dataPlaneRequestChannel, connectionQuotas, listenerName, securityProtocol, memoryPool)
       listenerProcessors += processor
       dataPlaneRequestChannel.addProcessor(processor)

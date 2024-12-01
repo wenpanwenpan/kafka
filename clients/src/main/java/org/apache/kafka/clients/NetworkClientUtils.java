@@ -91,8 +91,10 @@ public final class NetworkClientUtils {
      */
     public static ClientResponse sendAndReceive(KafkaClient client, ClientRequest request, Time time) throws IOException {
         try {
+            // 发送请求
             client.send(request, time.milliseconds());
             while (client.active()) {
+                // 接收请求响应并处理
                 List<ClientResponse> responses = client.poll(Long.MAX_VALUE, time.milliseconds());
                 for (ClientResponse response : responses) {
                     if (response.requestHeader().correlationId() == request.correlationId()) {

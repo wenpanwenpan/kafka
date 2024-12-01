@@ -931,13 +931,13 @@ object ZkData {
 
   // These are persistent ZK paths that should exist on kafka broker startup.
   val PersistentZkPaths = Seq(
-    ConsumerPathZNode.path, // old consumer path
-    BrokerIdsZNode.path,
-    TopicsZNode.path,
+    ConsumerPathZNode.path, // old consumer path 消费者旧路径 /customers
+    BrokerIdsZNode.path, // broker节点的路径 /brokers/ids
+    TopicsZNode.path, // topic节点的路径 /brokers/topics
     ConfigEntityChangeNotificationZNode.path,
-    DeleteTopicsZNode.path,
+    DeleteTopicsZNode.path, // 删除topic的路径
     BrokerSequenceIdZNode.path,
-    IsrChangeNotificationZNode.path,
+    IsrChangeNotificationZNode.path, // isr变更通知路径
     ProducerIdBlockZNode.path,
     LogDirEventNotificationZNode.path
   ) ++ ConfigType.all.map(ConfigEntityTypeZNode.path)

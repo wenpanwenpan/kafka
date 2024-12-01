@@ -119,6 +119,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
 
     debug(s"Try to create ${ControllerZNode.path} and increment controller epoch to $newControllerEpoch with expected controller epoch zkVersion $expectedControllerEpochZkVersion")
 
+    // 检查控制器创建和epoch版本
     def checkControllerAndEpoch(): (Int, Int) = {
       val curControllerId = getControllerId.getOrElse(throw new ControllerMovedException(
         s"The ephemeral node at ${ControllerZNode.path} went away while checking whether the controller election succeeds. " +
@@ -137,6 +138,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
       throw new ControllerMovedException("Controller moved to another broker. Aborting controller startup procedure")
     }
 
+    // 尝试创建控制器节点并且将controller的epoch加一
     def tryCreateControllerZNodeAndIncrementEpoch(): (Int, Int) = {
       val response = retryRequestUntilConnected(
         MultiRequest(Seq(
@@ -152,6 +154,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
       }
     }
 
+    // 尝试创建控制器节点并且将controller的epoch加一
     tryCreateControllerZNodeAndIncrementEpoch()
   }
 
@@ -1378,6 +1381,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * @throws KeeperException if an error is returned by ZooKeeper
    */
   def registerZNodeChangeHandlerAndCheckExistence(zNodeChangeHandler: ZNodeChangeHandler): Boolean = {
+    // 注册回调方法 zNodeChangeHandler
     zooKeeperClient.registerZNodeChangeHandler(zNodeChangeHandler)
     val existsResponse = retryRequestUntilConnected(ExistsRequest(zNodeChangeHandler.path))
     existsResponse.resultCode match {
@@ -1549,6 +1553,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     * Pre-create top level paths in ZK if needed.
     */
   def createTopLevelPaths(): Unit = {
+    // 循环创建持久化路径，@see ZkData.PersistentZkPaths
     ZkData.PersistentZkPaths.foreach(makeSurePersistentPathExists(_))
   }
 

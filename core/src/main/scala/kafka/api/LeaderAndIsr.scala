@@ -30,9 +30,9 @@ object LeaderAndIsr {
   def duringDelete(isr: List[Int]): LeaderAndIsr = LeaderAndIsr(LeaderDuringDelete, isr)
 }
 
-case class LeaderAndIsr(leader: Int,
+case class LeaderAndIsr(leader: Int, // leader
                         leaderEpoch: Int,
-                        isr: List[Int],
+                        isr: List[Int], // isr集合
                         zkVersion: Int) {
   def withZkVersion(zkVersion: Int) = copy(zkVersion = zkVersion)
 

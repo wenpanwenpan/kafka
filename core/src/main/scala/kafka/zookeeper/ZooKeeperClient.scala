@@ -77,7 +77,9 @@ class ZooKeeperClient(connectString: String,
   private val initializationLock = new ReentrantReadWriteLock()
   private val isConnectedOrExpiredLock = new ReentrantLock()
   private val isConnectedOrExpiredCondition = isConnectedOrExpiredLock.newCondition()
+  // 保存节点的变更后对应的监听器
   private val zNodeChangeHandlers = new ConcurrentHashMap[String, ZNodeChangeHandler]().asScala
+  // 保存节点的子节点变更后对应的监听器
   private val zNodeChildChangeHandlers = new ConcurrentHashMap[String, ZNodeChildChangeHandler]().asScala
   private val inFlightRequests = new Semaphore(maxInFlightRequests)
   private val stateChangeHandlers = new ConcurrentHashMap[String, StateChangeHandler]().asScala
@@ -445,9 +447,13 @@ class ZooKeeperClient(connectString: String,
           }
         case Some(path) =>
           (event.getType: @unchecked) match {
+            // 节点子节点变化
             case EventType.NodeChildrenChanged => zNodeChildChangeHandlers.get(path).foreach(_.handleChildChange())
+            // 节点创建
             case EventType.NodeCreated => zNodeChangeHandlers.get(path).foreach(_.handleCreation())
+            // 节点删除
             case EventType.NodeDeleted => zNodeChangeHandlers.get(path).foreach(_.handleDeletion())
+            // 节点数据变化
             case EventType.NodeDataChanged => zNodeChangeHandlers.get(path).foreach(_.handleDataChange())
           }
       }
@@ -455,6 +461,7 @@ class ZooKeeperClient(connectString: String,
   }
 }
 
+// zk状态变更处理器
 trait StateChangeHandler {
   val name: String
   def beforeInitializingSession(): Unit = {}
@@ -463,14 +470,22 @@ trait StateChangeHandler {
 }
 
 trait ZNodeChangeHandler {
+  // 监听的节点路径
   val path: String
+  // 监听到节点变化后的回调方法
+  // 节点创建
   def handleCreation(): Unit = {}
+  // 节点删除
   def handleDeletion(): Unit = {}
+  // 节点变化
   def handleDataChange(): Unit = {}
 }
 
+// zk的节点的子节点变化处理器
 trait ZNodeChildChangeHandler {
+  // 监听的路径
   val path: String
+  // 路径下的子节点变化后的回调方法
   def handleChildChange(): Unit = {}
 }
 

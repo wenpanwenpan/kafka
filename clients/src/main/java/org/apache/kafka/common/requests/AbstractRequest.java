@@ -28,6 +28,7 @@ import org.apache.kafka.common.protocol.types.Struct;
 import java.nio.ByteBuffer;
 import java.util.Map;
 
+// 请求抽象类，parseRequest方法统一了处理各类请求的入口
 public abstract class AbstractRequest implements AbstractRequestResponse {
 
     public static abstract class Builder<T extends AbstractRequest> {
@@ -142,6 +143,7 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
 
     /**
      * Factory method for getting a request object based on ApiKey ID and a version
+     * 处理各类型请求的入口
      */
     public static AbstractRequest parseRequest(ApiKeys apiKey, short apiVersion, Struct struct) {
         switch (apiKey) {
@@ -168,10 +170,12 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
             case SYNC_GROUP:
                 return new SyncGroupRequest(struct, apiVersion);
             case STOP_REPLICA:
+                // 创建一个停止副本请求
                 return new StopReplicaRequest(struct, apiVersion);
             case CONTROLLED_SHUTDOWN:
                 return new ControlledShutdownRequest(struct, apiVersion);
             case UPDATE_METADATA:
+                // 创建一个更新元数据的请求
                 return new UpdateMetadataRequest(struct, apiVersion);
             case LEADER_AND_ISR:
                 return new LeaderAndIsrRequest(struct, apiVersion);

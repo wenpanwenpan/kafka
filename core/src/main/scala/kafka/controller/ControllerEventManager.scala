@@ -56,6 +56,7 @@ class QueuedEvent(val event: ControllerEvent,
     // 如果事件被处理过了就不处理了
     if (spent.getAndSet(true))
       return
+    // 唤醒等待线程
     processingStarted.countDown()
     // 通过ControllerEventProcessor来处理事件（实现类是KafkaController）
     processor.process(event)
@@ -68,6 +69,7 @@ class QueuedEvent(val event: ControllerEvent,
     processor.preempt(event)
   }
 
+  // 调用该方法的线程会阻塞等待，直到processingStarted等于0
   def awaitProcessing(): Unit = {
     processingStarted.await()
   }
@@ -88,7 +90,7 @@ class ControllerEventManager(controllerId: Int, // controller的ID
   @volatile private var _state: ControllerState = ControllerState.Idle
   private val putLock = new ReentrantLock()
   private val queue = new LinkedBlockingQueue[QueuedEvent]
-  // Visible for test
+  // Visible for test 注意该线程的类型是 ControllerEventThread ，线程核心逻辑在他的内部
   private[controller] var thread = new ControllerEventThread(ControllerEventThreadName)
 
   private val eventQueueTimeHist = newHistogram(EventQueueTimeMetricName)
@@ -146,14 +148,16 @@ class ControllerEventManager(controllerId: Int, // controller的ID
         case controllerEvent =>
           _state = controllerEvent.state
 
+          // 更新事件在队列里待的时间
           eventQueueTimeHist.update(time.milliseconds() - dequeued.enqueueTimeMs)
 
           try {
-            // 定义事件的处理方法
+            // 定义事件的处理方法，可以看到事件里其实就包含了处理该事件的方法
             def process(): Unit = dequeued.process(processor)
 
             // 统计事件处理时间并调用processor方法处理事件
             rateAndTimeMetrics.get(state) match {
+              // 执行事件处理
               case Some(timer) => timer.time { process() }
               case None => process()
             }

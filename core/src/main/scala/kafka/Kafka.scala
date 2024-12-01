@@ -64,7 +64,9 @@ object Kafka extends Logging {
 
   def main(args: Array[String]): Unit = {
     try {
+      // 获取配置属性
       val serverProps = getPropsFromArgs(args)
+      // 根据配置属性创建一个KafkaServerStartable对象
       val kafkaServerStartable = KafkaServerStartable.fromProps(serverProps)
 
       try {
@@ -77,8 +79,10 @@ object Kafka extends Logging {
       }
 
       // attach shutdown handler to catch terminating signals as well as normal termination
+      // 添加一个钩子，用于捕获终止信号，捕获到信号时执行kafkaServerStartable.shutdown()
       Exit.addShutdownHook("kafka-shutdown-hook", kafkaServerStartable.shutdown())
 
+      // 【重要】启动kafka服务
       kafkaServerStartable.startup()
       kafkaServerStartable.awaitShutdown()
     }

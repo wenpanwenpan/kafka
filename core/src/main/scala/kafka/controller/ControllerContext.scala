@@ -74,24 +74,25 @@ case class ReplicaAssignment private (replicas: Seq[Int],
 
 // 集群元数据
 class ControllerContext {
-  val stats = new ControllerStats
-  var offlinePartitionCount = 0
+  val stats = new ControllerStats // controller状态信息
+  var offlinePartitionCount = 0 // 离线/不可用分区的数量
   var preferredReplicaImbalanceCount = 0
-  val shuttingDownBrokerIds = mutable.Set.empty[Int]
-  private val liveBrokers = mutable.Set.empty[Broker]
-  private val liveBrokerEpochs = mutable.Map.empty[Int, Long]
-  var epoch: Int = KafkaController.InitialControllerEpoch
+  val shuttingDownBrokerIds = mutable.Set.empty[Int] // 正在关闭的broker列表
+  private val liveBrokers = mutable.Set.empty[Broker] // 运行中的broker列表
+  private val liveBrokerEpochs = mutable.Map.empty[Int, Long] // 运行中的broker列表的epoch
+  var epoch: Int = KafkaController.InitialControllerEpoch // controller epoch
   var epochZkVersion: Int = KafkaController.InitialControllerEpochZkVersion
 
-  val allTopics = mutable.Set.empty[String]
-  val partitionAssignments = mutable.Map.empty[String, mutable.Map[Int, ReplicaAssignment]]
-  private val partitionLeadershipInfo = mutable.Map.empty[TopicPartition, LeaderIsrAndControllerEpoch]
-  val partitionsBeingReassigned = mutable.Set.empty[TopicPartition]
-  val partitionStates = mutable.Map.empty[TopicPartition, PartitionState]
+  val allTopics = mutable.Set.empty[String] // 集群topic列表
+  val partitionAssignments = mutable.Map.empty[String, mutable.Map[Int, ReplicaAssignment]] // 集群topic分区副本列表
+  private val partitionLeadershipInfo = mutable.Map.empty[TopicPartition, LeaderIsrAndControllerEpoch] // topic分区leader信息
+  val partitionsBeingReassigned = mutable.Set.empty[TopicPartition] // 正在执行重分配的分区列表
+  val partitionStates = mutable.Map.empty[TopicPartition, PartitionState] // 分区状态信息汇总
+  // 副本的状态集合，key是副本信息，value是该副本的状态
   val replicaStates = mutable.Map.empty[PartitionAndReplica, ReplicaState]
-  val replicasOnOfflineDirs = mutable.Map.empty[Int, Set[TopicPartition]]
+  val replicasOnOfflineDirs = mutable.Map.empty[Int, Set[TopicPartition]] // 不可用的磁盘路径上的副本列表
 
-  val topicsToBeDeleted = mutable.Set.empty[String]
+  val topicsToBeDeleted = mutable.Set.empty[String] // 待删除的topic列表
 
   /** The following topicsWithDeletionStarted variable is used to properly update the offlinePartitionCount metric.
    * When a topic is going through deletion, we don't want to keep track of its partition state
@@ -112,8 +113,8 @@ class ControllerContext {
    * NonExistentPartition state. Once a topic is in the topicsWithDeletionStarted set, we will stop monitoring
    * its partition state changes in the offlinePartitionCount metric
    */
-  val topicsWithDeletionStarted = mutable.Set.empty[String]
-  val topicsIneligibleForDeletion = mutable.Set.empty[String]
+  val topicsWithDeletionStarted = mutable.Set.empty[String] // 删除中的topic列表
+  val topicsIneligibleForDeletion = mutable.Set.empty[String] // 暂时无法删除的topic列表
 
   private def clearTopicsState(): Unit = {
     allTopics.clear()
@@ -341,6 +342,7 @@ class ControllerContext {
   }
 
   def checkValidReplicaStateChange(replicas: Seq[PartitionAndReplica], targetState: ReplicaState): (Seq[PartitionAndReplica], Seq[PartitionAndReplica]) = {
+    // 遍历副本
     replicas.partition(replica => isValidReplicaStateTransition(replica, targetState))
   }
 
@@ -484,7 +486,9 @@ class ControllerContext {
       leadershipInfo.leaderAndIsr.leader == preferredReplica
   }
 
+  // 检查下状态流转是否有效（也就是要流转的目标状态是否在该状态的前置状态集合里）
   private def isValidReplicaStateTransition(replica: PartitionAndReplica, targetState: ReplicaState): Boolean =
+  // 看下目标状态的前置状态是否包含当前副本的状态
     targetState.validPreviousStates.contains(replicaStates(replica))
 
   private def isValidPartitionStateTransition(partition: TopicPartition, targetState: PartitionState): Boolean =

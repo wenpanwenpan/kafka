@@ -310,6 +310,7 @@ object RequestChannel extends Logging {
   }
 }
 
+// 一个requestChannel里包含了一个队列和多个线程
 class RequestChannel(val queueSize: Int, // 请求队列的大小
                      val metricNamePrefix : String, // 度量指标前缀
                      time: Time) extends KafkaMetricsGroup {

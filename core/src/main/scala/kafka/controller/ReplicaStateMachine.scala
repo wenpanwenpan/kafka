@@ -29,17 +29,21 @@ import org.apache.kafka.common.errors.ControllerMovedException
 import org.apache.zookeeper.KeeperException.Code
 import scala.collection.{Seq, mutable}
 
+// 副本状态机，接收一个 ControllerContext 参数
 abstract class ReplicaStateMachine(controllerContext: ControllerContext) extends Logging {
   /**
    * Invoked on successful controller election.
    */
   def startup(): Unit = {
     info("Initializing replica state")
+    // 初始化副本状态机
     initializeReplicaState()
     info("Triggering online replica state changes")
     val (onlineReplicas, offlineReplicas) = controllerContext.onlineAndOfflineReplicas
+    // 处理在线的副本状态流转
     handleStateChanges(onlineReplicas.toSeq, OnlineReplica)
     info("Triggering offline replica state changes")
+    // 处理离线的副本状态流转
     handleStateChanges(offlineReplicas.toSeq, OfflineReplica)
     debug(s"Started replica state machine with initial state -> ${controllerContext.replicaStates}")
   }
@@ -72,6 +76,7 @@ abstract class ReplicaStateMachine(controllerContext: ControllerContext) extends
     }
   }
 
+  // 状态机状态流转核心方法
   def handleStateChanges(replicas: Seq[PartitionAndReplica], targetState: ReplicaState): Unit
 }
 
@@ -93,6 +98,7 @@ abstract class ReplicaStateMachine(controllerContext: ControllerContext) extends
  *                        ReplicaDeletionStarted and OfflineReplica
  * 7. NonExistentReplica: If a replica is deleted successfully, it is moved to this state. Valid previous state is
  *                        ReplicaDeletionSuccessful
+ * ReplicaStateMachine状态机的唯一实现
  */
 class ZkReplicaStateMachine(config: KafkaConfig,
                             stateChangeLogger: StateChangeLogger,
@@ -108,7 +114,9 @@ class ZkReplicaStateMachine(config: KafkaConfig,
     if (replicas.nonEmpty) {
       try {
         controllerBrokerRequestBatch.newBatch()
+        // 遍历每个副本
         replicas.groupBy(_.replica).forKeyValue { (replicaId, replicas) =>
+          // 实际状态流转
           doHandleStateChanges(replicaId, replicas, targetState)
         }
         controllerBrokerRequestBatch.sendRequestsToBrokers(controllerContext.epoch)
@@ -159,10 +167,14 @@ class ZkReplicaStateMachine(config: KafkaConfig,
   private def doHandleStateChanges(replicaId: Int, replicas: Seq[PartitionAndReplica], targetState: ReplicaState): Unit = {
     val stateLogger = stateChangeLogger.withControllerEpoch(controllerContext.epoch)
     val traceEnabled = stateLogger.isTraceEnabled
+    // 将副本状态保存到元数据中
     replicas.foreach(replica => controllerContext.putReplicaStateIfNotExists(replica, NonExistentReplica))
+    // 检查下状态流转是否有效（也就是要流转的目标状态是否在该状态的前置状态集合里）
     val (validReplicas, invalidReplicas) = controllerContext.checkValidReplicaStateChange(replicas, targetState)
+    // 遍历无效状态流转的副本，逐一打印日志
     invalidReplicas.foreach(replica => logInvalidTransition(replica, targetState))
 
+    // 通过要流转的目标状态来做不同的分支处理
     targetState match {
       case NewReplica =>
         validReplicas.foreach { replica =>
@@ -431,11 +443,13 @@ class ZkReplicaStateMachine(config: KafkaConfig,
     (result.toMap, partitionsWithNoLeaderAndIsrInZk)
   }
 
+  // 状态流转成功
   private def logSuccessfulTransition(logger: StateChangeLogger, replicaId: Int, partition: TopicPartition,
                                       currState: ReplicaState, targetState: ReplicaState): Unit = {
     logger.trace(s"Changed state of replica $replicaId for partition $partition from $currState to $targetState")
   }
 
+  // 非法状态流转
   private def logInvalidTransition(replica: PartitionAndReplica, targetState: ReplicaState): Unit = {
     val currState = controllerContext.replicaState(replica)
     val e = new IllegalStateException(s"Replica $replica should be in the ${targetState.validPreviousStates.mkString(",")} " +
@@ -443,6 +457,7 @@ class ZkReplicaStateMachine(config: KafkaConfig,
     logFailedStateChange(replica, currState, targetState, e)
   }
 
+  // 状态流转失败
   private def logFailedStateChange(replica: PartitionAndReplica, currState: ReplicaState, targetState: ReplicaState, t: Throwable): Unit = {
     stateChangeLogger.withControllerEpoch(controllerContext.epoch)
       .error(s"Controller $controllerId epoch ${controllerContext.epoch} initiated state change of replica ${replica.replica} " +
@@ -450,41 +465,51 @@ class ZkReplicaStateMachine(config: KafkaConfig,
   }
 }
 
+// 副本状态接口
 sealed trait ReplicaState {
+  // 状态值
   def state: Byte
+  // 能流转到该状态的前置状态集合
   def validPreviousStates: Set[ReplicaState]
 }
 
+// 新建副本状态
 case object NewReplica extends ReplicaState {
   val state: Byte = 1
   val validPreviousStates: Set[ReplicaState] = Set(NonExistentReplica)
 }
 
+// 在线副本状态
 case object OnlineReplica extends ReplicaState {
   val state: Byte = 2
   val validPreviousStates: Set[ReplicaState] = Set(NewReplica, OnlineReplica, OfflineReplica, ReplicaDeletionIneligible)
 }
 
+// 离线副本状态
 case object OfflineReplica extends ReplicaState {
   val state: Byte = 3
   val validPreviousStates: Set[ReplicaState] = Set(NewReplica, OnlineReplica, OfflineReplica, ReplicaDeletionIneligible)
 }
 
+// 删除副本中
 case object ReplicaDeletionStarted extends ReplicaState {
   val state: Byte = 4
   val validPreviousStates: Set[ReplicaState] = Set(OfflineReplica)
 }
 
+// 删除副本成功
 case object ReplicaDeletionSuccessful extends ReplicaState {
   val state: Byte = 5
   val validPreviousStates: Set[ReplicaState] = Set(ReplicaDeletionStarted)
 }
 
+// 删除副本失败
 case object ReplicaDeletionIneligible extends ReplicaState {
   val state: Byte = 6
   val validPreviousStates: Set[ReplicaState] = Set(OfflineReplica, ReplicaDeletionStarted)
 }
 
+// 不存在的副本状态（副本已经完成下线）
 case object NonExistentReplica extends ReplicaState {
   val state: Byte = 7
   val validPreviousStates: Set[ReplicaState] = Set(ReplicaDeletionSuccessful)

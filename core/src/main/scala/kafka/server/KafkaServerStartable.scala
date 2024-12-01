@@ -25,10 +25,12 @@ import kafka.utils.{Exit, Logging, VerifiableProperties}
 import scala.collection.Seq
 
 object KafkaServerStartable {
+  // 根据配置属性创建一个KafkaServerStartable对象
   def fromProps(serverProps: Properties): KafkaServerStartable = {
     fromProps(serverProps, None)
   }
 
+  // 根据配置属性创建一个KafkaServerStartable对象
   def fromProps(serverProps: Properties, threadNamePrefix: Option[String]): KafkaServerStartable = {
     val reporters = KafkaMetricsReporter.startReporters(new VerifiableProperties(serverProps))
     new KafkaServerStartable(KafkaConfig.fromProps(serverProps, false), reporters, threadNamePrefix)
@@ -36,11 +38,14 @@ object KafkaServerStartable {
 }
 
 class KafkaServerStartable(val staticServerConfig: KafkaConfig, reporters: Seq[KafkaMetricsReporter], threadNamePrefix: Option[String] = None) extends Logging {
+  // 创建一个sever对象
   private val server = new KafkaServer(staticServerConfig, kafkaMetricsReporters = reporters, threadNamePrefix = threadNamePrefix)
 
   def this(serverConfig: KafkaConfig) = this(serverConfig, Seq.empty)
 
+  // 启动kafka服务
   def startup(): Unit = {
+    // 【重要】启动kafka服务
     try server.startup()
     catch {
       case _: Throwable =>
@@ -50,6 +55,7 @@ class KafkaServerStartable(val staticServerConfig: KafkaConfig, reporters: Seq[K
     }
   }
 
+  // 关闭kafka服务
   def shutdown(): Unit = {
     try server.shutdown()
     catch {
