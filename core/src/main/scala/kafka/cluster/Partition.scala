@@ -253,23 +253,26 @@ case class CommittedIsr(
  *    locking order Partition lock -> Log lock.
  * 5) lock is used to prevent the follower replica from being updated while ReplicaAlterDirThread is
  *    executing maybeReplaceCurrentWithFutureReplica() to replace follower replica with the future replica.
+ *    topic 的分区对象
  */
-class Partition(val topicPartition: TopicPartition,
+class Partition(val topicPartition: TopicPartition, // topic分区对象（topic名称和分区号）
                 val replicaLagTimeMaxMs: Long,
                 interBrokerProtocolVersion: ApiVersion,
-                localBrokerId: Int,
+                localBrokerId: Int, // 该分区所在节点的brokerId
                 time: Time,
                 stateStore: PartitionStateStore,
                 isrChangeListener: IsrChangeListener,
                 delayedOperations: DelayedOperations,
-                metadataCache: MetadataCache,
-                logManager: LogManager,
+                metadataCache: MetadataCache, // 元数据缓存
+                logManager: LogManager, // 负责对该分区所对应的日志文件进行管理
                 alterIsrManager: AlterIsrManager) extends Logging with KafkaMetricsGroup {
-
+  // 分区所属topic
   def topic: String = topicPartition.topic
+  // 分区号
   def partitionId: Int = topicPartition.partition
 
   private val stateChangeLogger = new StateChangeLogger(localBrokerId, inControllerContext = false, None)
+  // 该分区的所有副本信息（不包含当前节点），key是brokerId，value是副本信息
   private val remoteReplicasMap = new Pool[Int, Replica]
   // The read lock is only required when multiple reads are executed and needs to be in a consistent manner
   private val leaderIsrUpdateLock = new ReentrantReadWriteLock
@@ -277,10 +280,12 @@ class Partition(val topicPartition: TopicPartition,
   // lock to prevent the follower replica log update while checking if the log dir could be replaced with future log.
   private val futureLogLock = new Object()
   private var zkVersion: Int = LeaderAndIsr.initialZKVersion
+  // 分区的 leaderEpoch
   @volatile private var leaderEpoch: Int = LeaderAndIsr.initialLeaderEpoch - 1
   // start offset for 'leaderEpoch' above (leader epoch of the current leader for this partition),
   // defined when this broker is leader for partition
   @volatile private var leaderEpochStartOffsetOpt: Option[Long] = None
+  // 分区leader所在副本的broker ID
   @volatile var leaderReplicaIdOpt: Option[Int] = None
   @volatile private[cluster] var isrState: IsrState = CommittedIsr(Set.empty)
   @volatile var assignmentState: AssignmentState = SimpleAssignmentState(Seq.empty)
@@ -300,6 +305,7 @@ class Partition(val topicPartition: TopicPartition,
    * the controller sends it a start replica command containing the leader for each partition that the broker hosts.
    * In addition to the leader, the controller can also send the epoch of the controller that elected the leader for
    * each partition. */
+  // 当前broker上记录的controller的epoch值
   private var controllerEpoch: Int = KafkaController.InitialControllerEpoch
   this.logIdent = s"[Partition $topicPartition broker=$localBrokerId] "
 

@@ -204,16 +204,16 @@ class ReplicaManager(val config: KafkaConfig,
                      threadNamePrefix: Option[String],
                      val alterIsrManager: AlterIsrManager) extends Logging with KafkaMetricsGroup {
 
-  def this(config: KafkaConfig,
+  def this(config: KafkaConfig, // broker 配置
            metrics: Metrics,
            time: Time,
-           zkClient: KafkaZkClient,
+           zkClient: KafkaZkClient, // 和zk交互的客户端
            scheduler: Scheduler,
-           logManager: LogManager,
+           logManager: LogManager, // broker上的分区日志管理器
            isShuttingDown: AtomicBoolean,
            quotaManagers: QuotaManagers,
            brokerTopicStats: BrokerTopicStats,
-           metadataCache: MetadataCache,
+           metadataCache: MetadataCache, // 集群元数据
            logDirFailureChannel: LogDirFailureChannel,
            alterIsrManager: AlterIsrManager,
            threadNamePrefix: Option[String] = None) = {
@@ -236,6 +236,7 @@ class ReplicaManager(val config: KafkaConfig,
   /* epoch of the controller that last changed the leader */
   @volatile var controllerEpoch: Int = KafkaController.InitialControllerEpoch
   private val localBrokerId = config.brokerId
+  // 该broker上的所有分区
   private val allPartitions = new Pool[TopicPartition, HostedPartition](
     valueFactory = Some(tp => HostedPartition.Online(Partition(tp, time, this)))
   )
