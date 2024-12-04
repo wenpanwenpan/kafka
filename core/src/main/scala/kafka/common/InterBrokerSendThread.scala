@@ -67,7 +67,9 @@ abstract class InterBrokerSendThread(name: String,
     }
 
     try {
+      // 发送请求
       val timeout = sendRequests(now)
+      // 真正发送请求并接收请求响应的地方
       networkClient.poll(timeout, now)
       now = time.milliseconds()
       checkDisconnects(now)

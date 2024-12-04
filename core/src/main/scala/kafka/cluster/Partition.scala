@@ -1406,15 +1406,19 @@ class Partition(val topicPartition: TopicPartition, // topic分区对象（topic
 
   private def sendAlterIsrRequest(proposedIsrState: IsrState): Unit = {
     val isrToSend: Set[Int] = proposedIsrState match {
+      // 加入ISR集合
       case PendingExpandIsr(isr, newInSyncReplicaId) => isr + newInSyncReplicaId
+      // 离开ISR集合
       case PendingShrinkIsr(isr, outOfSyncReplicaIds) => isr -- outOfSyncReplicaIds
       case state =>
         throw new IllegalStateException(s"Invalid state $state for `AlterIsr` request for partition $topicPartition")
     }
 
+    // 构建请求
     val newLeaderAndIsr = new LeaderAndIsr(localBrokerId, leaderEpoch, isrToSend.toList, zkVersion)
     val alterIsrItem = AlterIsrItem(topicPartition, newLeaderAndIsr, handleAlterIsrResponse(proposedIsrState))
 
+    // 加入发送队列
     if (!alterIsrManager.enqueue(alterIsrItem)) {
       isrChangeListener.markFailed()
       throw new IllegalStateException(s"Failed to enqueue `AlterIsr` request with state " +

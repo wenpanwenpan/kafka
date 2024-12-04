@@ -86,6 +86,7 @@ class AlterIsrManagerImpl(val controllerChannelManager: BrokerToControllerChanne
     }
   }
 
+  // 发送请求给集群controller
   private def sendRequest(inflightAlterIsrItems: Seq[AlterIsrItem]): Unit = {
     val message = buildRequest(inflightAlterIsrItems)
     def responseHandler(response: ClientResponse): Unit = {
@@ -101,6 +102,7 @@ class AlterIsrManagerImpl(val controllerChannelManager: BrokerToControllerChanne
     }
 
     debug(s"Sending AlterIsr to controller $message")
+    // 发送请求给controller
     controllerChannelManager.sendRequest(new AlterIsrRequest.Builder(message), responseHandler)
   }
 
@@ -127,6 +129,7 @@ class AlterIsrManagerImpl(val controllerChannelManager: BrokerToControllerChanne
     message
   }
 
+  // 处理ISR变更同步请求响应
   def handleAlterIsrResponse(alterIsrResponse: AlterIsrResponse,
                              sentBrokerEpoch: Long,
                              inflightAlterIsrItems: Seq[AlterIsrItem]): Unit = {

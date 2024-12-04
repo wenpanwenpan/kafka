@@ -70,6 +70,7 @@ class BrokerToControllerChannelManagerImpl(metadataCache: kafka.server.MetadataC
     requestThread.awaitShutdown()
   }
 
+  // 创建一个发送线程
   private[server] def newRequestThread = {
     val brokerToControllerListenerName = config.controlPlaneListenerName.getOrElse(config.interBrokerListenerName)
     val brokerToControllerSecurityProtocol = config.controlPlaneSecurityProtocol.getOrElse(config.interBrokerSecurityProtocol)
@@ -120,13 +121,16 @@ class BrokerToControllerChannelManagerImpl(metadataCache: kafka.server.MetadataC
       case Some(name) => s"$name:broker-${config.brokerId}-to-controller-send-thread"
     }
 
+    // 创建线程
     new BrokerToControllerRequestThread(networkClient, manualMetadataUpdater, requestQueue, metadataCache, config,
       brokerToControllerListenerName, time, threadName)
   }
 
   override def sendRequest(request: AbstractRequest.Builder[_ <: AbstractRequest],
                            callback: RequestCompletionHandler): Unit = {
+    // 请求先入队
     requestQueue.put(BrokerToControllerQueueItem(request, callback))
+    // 唤醒发送线程
     requestThread.wakeup()
   }
 }
@@ -178,6 +182,7 @@ class BrokerToControllerRequestThread(networkClient: KafkaClient,
 
   private[server] def backoff(): Unit = pause(100, TimeUnit.MILLISECONDS)
 
+  // 线程实际工作的核心方法
   override def doWork(): Unit = {
     if (activeController.isDefined) {
       super.doWork()
