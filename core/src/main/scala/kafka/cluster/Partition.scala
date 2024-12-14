@@ -45,6 +45,7 @@ import org.apache.kafka.common.{IsolationLevel, TopicPartition}
 import scala.collection.{Map, Seq}
 import scala.jdk.CollectionConverters._
 
+// ISR集合变更监听器
 trait IsrChangeListener {
   def markExpand(): Unit
   def markShrink(): Unit
@@ -173,10 +174,11 @@ case class OngoingReassignmentState(addingReplicas: Seq[Int],
 case class SimpleAssignmentState(replicas: Seq[Int]) extends AssignmentState
 
 
-
+// ISR 管理
 sealed trait IsrState {
   /**
    * Includes only the in-sync replicas which have been committed to ZK.
+   * ISR集合
    */
   def isr: Set[Int]
 
@@ -191,6 +193,7 @@ sealed trait IsrState {
 
   /**
    * Indicates if we have an AlterIsr request inflight.
+   * 是否有变更ISR的请求正在进行中
    */
   def isInflight: Boolean
 }
@@ -224,7 +227,7 @@ case class PendingShrinkIsr(
 }
 
 case class CommittedIsr(
-  isr: Set[Int]
+  isr: Set[Int] // ISR 集合里的副本
 ) extends IsrState {
   val maximalIsr = isr
   val isInflight = false
@@ -253,7 +256,7 @@ case class CommittedIsr(
  *    locking order Partition lock -> Log lock.
  * 5) lock is used to prevent the follower replica from being updated while ReplicaAlterDirThread is
  *    executing maybeReplaceCurrentWithFutureReplica() to replace follower replica with the future replica.
- *    topic 的分区对象
+ *    topic 的分区的抽象
  */
 class Partition(val topicPartition: TopicPartition, // topic分区对象（topic名称和分区号）
                 val replicaLagTimeMaxMs: Long,
@@ -273,6 +276,7 @@ class Partition(val topicPartition: TopicPartition, // topic分区对象（topic
 
   private val stateChangeLogger = new StateChangeLogger(localBrokerId, inControllerContext = false, None)
   // 该分区的所有副本信息（不包含当前节点），key是brokerId，value是副本信息
+  // 如果是这么表示的话，那么同一个分区的副本是不是就不能在同一个broker上了？？？
   private val remoteReplicasMap = new Pool[Int, Replica]
   // The read lock is only required when multiple reads are executed and needs to be in a consistent manner
   private val leaderIsrUpdateLock = new ReentrantReadWriteLock
@@ -280,13 +284,14 @@ class Partition(val topicPartition: TopicPartition, // topic分区对象（topic
   // lock to prevent the follower replica log update while checking if the log dir could be replaced with future log.
   private val futureLogLock = new Object()
   private var zkVersion: Int = LeaderAndIsr.initialZKVersion
-  // 分区的 leaderEpoch
+  // 分区的 leaderEpoch（也就是版本号）
   @volatile private var leaderEpoch: Int = LeaderAndIsr.initialLeaderEpoch - 1
   // start offset for 'leaderEpoch' above (leader epoch of the current leader for this partition),
   // defined when this broker is leader for partition
   @volatile private var leaderEpochStartOffsetOpt: Option[Long] = None
   // 分区leader所在副本的broker ID
   @volatile var leaderReplicaIdOpt: Option[Int] = None
+  // 【重要】该分区的ISR信息
   @volatile private[cluster] var isrState: IsrState = CommittedIsr(Set.empty)
   @volatile var assignmentState: AssignmentState = SimpleAssignmentState(Seq.empty)
 
@@ -330,6 +335,7 @@ class Partition(val topicPartition: TopicPartition, // topic分区对象（topic
 
   def isAddingReplica(replicaId: Int): Boolean = assignmentState.isAddingReplica(replicaId)
 
+  // 【重要】分区的 ISR 集合
   def inSyncReplicaIds: Set[Int] = isrState.isr
 
   /**
@@ -461,7 +467,7 @@ class Partition(val topicPartition: TopicPartition, // topic分区对象（topic
   }
 
   /**
-   * Returns true if this node is currently leader for the Partition.
+   * Returns true if this node is currently leader for the Partition. 当前broker是否是该分区的leader
    */
   def isLeader: Boolean = leaderReplicaIdOpt.contains(localBrokerId)
 
@@ -790,6 +796,7 @@ class Partition(val topicPartition: TopicPartition, // topic分区对象（topic
    * whether a replica is in-sync, we only check HW.
    *
    * This function can be triggered when a replica's LEO has incremented.
+   * 向分区的ISR集合添加一个副本
    */
   private def maybeExpandIsr(followerReplica: Replica, followerFetchTimeMs: Long): Unit = {
     val needsIsrUpdate = canAddReplicaToIsr(followerReplica.brokerId) && inReadLock(leaderIsrUpdateLock) {
@@ -1100,12 +1107,12 @@ class Partition(val topicPartition: TopicPartition, // topic分区对象（topic
   }
 
   // 【重要】读取消息
-  def readRecords(lastFetchedEpoch: Optional[Integer],
-                  fetchOffset: Long,
-                  currentLeaderEpoch: Optional[Integer],
-                  maxBytes: Int,
-                  fetchIsolation: FetchIsolation,
-                  fetchOnlyFromLeader: Boolean,
+  def readRecords(lastFetchedEpoch: Optional[Integer], // 上一次获取消息时的epoch值
+                  fetchOffset: Long, // 获取记录时的偏移量
+                  currentLeaderEpoch: Optional[Integer], // 当前leader epoch值
+                  maxBytes: Int, // 获取最大字节数
+                  fetchIsolation: FetchIsolation, // 获取的消息隔离级别（读取未提交消息或全量消息）
+                  fetchOnlyFromLeader: Boolean, // 是否只从leader节点读取消息
                   minOneMessage: Boolean): LogReadInfo = inReadLock(leaderIsrUpdateLock) {
     // decide whether to only fetch from leader
     val localLog = localLogWithEpochOrException(currentLeaderEpoch, fetchOnlyFromLeader)
@@ -1117,7 +1124,9 @@ class Partition(val topicPartition: TopicPartition, // topic分区对象（topic
     val initialLogEndOffset = localLog.logEndOffset
     val initialLastStableOffset = localLog.lastStableOffset
 
+    // 1、
     lastFetchedEpoch.ifPresent { fetchEpoch =>
+      // 2、
       val epochEndOffset = lastOffsetForLeaderEpoch(currentLeaderEpoch, fetchEpoch, fetchOnlyFromLeader = false)
       if (epochEndOffset.error != Errors.NONE) {
         throw epochEndOffset.error.exception()
@@ -1134,6 +1143,7 @@ class Partition(val topicPartition: TopicPartition, // topic分区对象（topic
           s"but we only have log segments in the range $initialLogStartOffset to $initialLogEndOffset.")
       }
 
+      // 3、
       if (epochEndOffset.leaderEpoch < fetchEpoch || epochEndOffset.endOffset < fetchOffset) {
         val emptyFetchData = FetchDataInfo(
           fetchOffsetMetadata = LogOffsetMetadata(fetchOffset),

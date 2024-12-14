@@ -233,17 +233,17 @@ case object SegmentDeletion extends LogStartOffsetIncrementReason {
  * @param producerIdExpirationCheckIntervalMs How often to check for producer ids which need to be expired
  */
 @threadsafe
-class Log(@volatile private var _dir: File,
-          @volatile var config: LogConfig,
-          @volatile var logStartOffset: Long,
+class Log(@volatile private var _dir: File, // 日志目录
+          @volatile var config: LogConfig, // 日志相关配置
+          @volatile var logStartOffset: Long, // LSO 日志起始位移
           @volatile var recoveryPoint: Long,
           scheduler: Scheduler,
           brokerTopicStats: BrokerTopicStats,
           val time: Time,
           val maxProducerIdExpirationMs: Int,
           val producerIdExpirationCheckIntervalMs: Int,
-          val topicPartition: TopicPartition,
-          val producerStateManager: ProducerStateManager,
+          val topicPartition: TopicPartition, // 日志所属的分区
+          val producerStateManager: ProducerStateManager, // 生产者状态管理器
           logDirFailureChannel: LogDirFailureChannel) extends Logging with KafkaMetricsGroup {
 
   import kafka.log.Log._

@@ -155,6 +155,7 @@ object HostedPartition {
 
   /**
    * This broker hosts the partition and it is online.
+   * 注意处于在线状态的分区，这里有一个参数 Partition
    */
   final case class Online(partition: Partition) extends HostedPartition
 
@@ -186,12 +187,14 @@ object ReplicaManager {
   )
 }
 
+// ReplicaManager 用于统筹broker上的相关操作管理，比如：从leader拉取数据，保存生产者发送的消息等
+// 其中和topic消息保存相关的都委托给了 LogManager 来进行，LogManager负责该broker上的所有分区的日志记录和管理
 class ReplicaManager(val config: KafkaConfig,
                      metrics: Metrics,
                      time: Time,
                      val zkClient: KafkaZkClient,
                      scheduler: Scheduler,
-                     val logManager: LogManager,
+                     val logManager: LogManager, // 用于统一管理该broker上的所有日志信息（对日志管理进行抽象）
                      val isShuttingDown: AtomicBoolean,
                      quotaManagers: QuotaManagers,
                      val brokerTopicStats: BrokerTopicStats,
@@ -209,7 +212,7 @@ class ReplicaManager(val config: KafkaConfig,
            time: Time,
            zkClient: KafkaZkClient, // 和zk交互的客户端
            scheduler: Scheduler,
-           logManager: LogManager, // broker上的分区日志管理器
+           logManager: LogManager, // broker上的分区日志管理器，管理该broker上的多个分区的消息、索引等日志读写
            isShuttingDown: AtomicBoolean,
            quotaManagers: QuotaManagers,
            brokerTopicStats: BrokerTopicStats,
@@ -233,16 +236,19 @@ class ReplicaManager(val config: KafkaConfig,
       threadNamePrefix, alterIsrManager)
   }
 
-  /* epoch of the controller that last changed the leader */
+  /* epoch of the controller that last changed the leader controller 的版本号*/
   @volatile var controllerEpoch: Int = KafkaController.InitialControllerEpoch
+  // 当前broker的ID
   private val localBrokerId = config.brokerId
   // 该broker上的所有分区
   private val allPartitions = new Pool[TopicPartition, HostedPartition](
     valueFactory = Some(tp => HostedPartition.Online(Partition(tp, time, this)))
   )
   private val replicaStateChangeLock = new Object
+  // 从分区leader上拉取消息数据的管理器
   val replicaFetcherManager = createReplicaFetcherManager(metrics, time, threadNamePrefix, quotaManagers.follower)
   val replicaAlterLogDirsManager = createReplicaAlterLogDirsManager(quotaManagers.alterLogDirs, brokerTopicStats)
+  // 标识高水位检查线程是否启动
   private val highWatermarkCheckPointThreadStarted = new AtomicBoolean(false)
   @volatile var highWatermarkCheckpoints: Map[String, OffsetCheckpointFile] = logManager.liveLogDirs.map(dir =>
     (dir.getAbsolutePath, new OffsetCheckpointFile(new File(dir, ReplicaManager.HighWatermarkFilename), logDirFailureChannel))).toMap
@@ -251,7 +257,9 @@ class ReplicaManager(val config: KafkaConfig,
   private val stateChangeLogger = new StateChangeLogger(localBrokerId, inControllerContext = false, None)
 
   private val isrChangeNotificationConfig = ReplicaManager.DefaultIsrPropagationConfig
+  // 记录ISR集合变更
   private val isrChangeSet: mutable.Set[TopicPartition] = new mutable.HashSet[TopicPartition]()
+  // 记录ISR集合最新一次变更的时间
   private val lastIsrChangeMs = new AtomicLong(time.milliseconds())
   private val lastIsrPropagationMs = new AtomicLong(time.milliseconds())
 
@@ -288,6 +296,7 @@ class ReplicaManager(val config: KafkaConfig,
 
   def underReplicatedPartitionCount: Int = leaderPartitionsIterator.count(_.isUnderReplicated)
 
+  // 高水位定期检查点线程
   def startHighWatermarkCheckPointThread(): Unit = {
     if (highWatermarkCheckPointThreadStarted.compareAndSet(false, true))
       scheduler.schedule("highwatermark-checkpoint", checkpointHighWatermarks _, period = config.replicaHighWatermarkCheckpointIntervalMs, unit = TimeUnit.MILLISECONDS)
@@ -341,9 +350,11 @@ class ReplicaManager(val config: KafkaConfig,
   def startup(): Unit = {
     // start ISR expiration thread
     // A follower can lag behind leader for up to config.replicaLagTimeMaxMs x 1.5 before it is removed from ISR
+    // 定期发起ISR过期检查（ISR缩容），也就是定时检查有哪些副本是需要从ISR集合里移除的，默认是30000ms
     scheduler.schedule("isr-expiration", maybeShrinkIsr _, period = config.replicaLagTimeMaxMs / 2, unit = TimeUnit.MILLISECONDS)
     // If using AlterIsr, we don't need the znode ISR propagation
     if (!config.interBrokerProtocolVersion.isAlterIsrSupported) {
+      // ISR 集合变更传播，比如leader上的ISR集合有变化，那么要通知其他broker更新ISR集合，默认是2500ms
       scheduler.schedule("isr-change-propagation", maybePropagateIsrChanges _,
         period = isrChangeNotificationConfig.checkIntervalMs, unit = TimeUnit.MILLISECONDS)
     } else {
@@ -1449,6 +1460,7 @@ class ReplicaManager(val config: KafkaConfig,
 
           // we initialize highwatermark thread after the first leaderisrrequest. This ensures that all the partitions
           // have been completely populated before starting the checkpointing there by avoiding weird race conditions
+          // 定期检查高水位
           startHighWatermarkCheckPointThread()
 
           maybeAddLogDirFetchers(partitionStates.keySet, highWatermarkCheckpoints)
