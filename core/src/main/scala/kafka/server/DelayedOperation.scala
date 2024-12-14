@@ -49,6 +49,7 @@ abstract class DelayedOperation(override val delayMs: Long,
                                 lockOpt: Option[Lock] = None)
   extends TimerTask with Logging {
 
+  // 该延时操作是否已完成
   private val completed = new AtomicBoolean(false)
   // Visible for testing
   private[server] val lock: Lock = lockOpt.getOrElse(new ReentrantLock)
@@ -66,12 +67,16 @@ abstract class DelayedOperation(override val delayMs: Long,
    * true, others will still return false
    */
   def forceComplete(): Boolean = {
+    // 通过cas将任务变更为完成
     if (completed.compareAndSet(false, true)) {
       // cancel the timeout timer
+      // 如果变更成功，则取消与该任务关联的entry节点关系，并把节点从时间轮对应的链表中移除（避免被时间轮重复调用）
       cancel()
+      // 回调任务的complete方法
       onComplete()
       true
     } else {
+      // 如果该任务已经是已完成状态了，则不用重复变更，返回false
       false
     }
   }
@@ -105,10 +110,12 @@ abstract class DelayedOperation(override val delayMs: Long,
    * Thread-safe variant of tryComplete() and call extra function if first tryComplete returns false
    * @param f else function to be executed after first tryComplete returns false
    * @return result of tryComplete
+   *         尝试将操作标记为完成，如果完成则返回true，否则执行入参里传递的f方法，f方法执行完后再次尝试tryComplete
    */
   private[server] def safeTryCompleteOrElse(f: => Unit): Boolean = inLock(lock) {
     if (tryComplete()) true
     else {
+      // 回调f方法
       f
       // last completion check
       tryComplete()
@@ -124,8 +131,12 @@ abstract class DelayedOperation(override val delayMs: Long,
    * run() method defines a task that is executed on timeout
    */
   override def run(): Unit = {
-    if (forceComplete())
+    // 将任务变为成功，这里做的操作如下：
+    // 1、通过cas将操作变为已完成，2、将任务所管理的entry从时间轮的链表上移除，防止被重复调用 3、回调onComplete方法 4、回调onExpiration方法
+    if (forceComplete()) {
+      // 执行已过期回调方法
       onExpiration()
+    }
   }
 }
 
@@ -177,15 +188,17 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
   // the number of estimated total operations in the purgatory
   private[this] val estimatedTotalOperations = new AtomicInteger(0)
 
-  /* background thread expiring operations that have timed out */
+  /* background thread expiring operations that have timed out 创建超时处理线程 */
   private val expirationReaper = new ExpiredOperationReaper()
 
   private val metricsTags = Map("delayedOperation" -> purgatoryName)
   newGauge("PurgatorySize", () => watched, metricsTags)
   newGauge("NumDelayedOperations", () => numDelayed, metricsTags)
 
-  if (reaperEnabled)
+  if (reaperEnabled) {
+    // 启动已过期任务检查线程
     expirationReaper.start()
+  }
 
   /**
    * Check if the operation can be completed, if not watch it based on the given watch keys
@@ -238,8 +251,11 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
 
     // if it cannot be completed by now and hence is watched, add to the expire queue also
     if (!operation.isCompleted) {
-      if (timerEnabled)
+      if (timerEnabled) {
+        // 将任务添加到时间轮上
         timeoutTimer.add(operation)
+      }
+      // 任务已经完成了则取消该任务
       if (operation.isCompleted) {
         // cancel the timer task
         operation.cancel()
@@ -403,7 +419,9 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
     }
   }
 
+  // 推进时间轮时钟
   def advanceClock(timeoutMs: Long): Unit = {
+    // 通过Timer来推进Timer管理的时间轮
     timeoutTimer.advanceClock(timeoutMs)
 
     // Trigger a purge if the number of completed but still being watched operations is larger than
@@ -424,12 +442,14 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
 
   /**
    * A background reaper to expire delayed operations that have timed out
+   * 对已过期的操作进行超时处理线程
    */
   private class ExpiredOperationReaper extends ShutdownableThread(
     "ExpirationReaper-%d-%s".format(brokerId, purgatoryName),
     false) {
 
     override def doWork(): Unit = {
+      // 推进时间轮时钟，阻塞等待时间为200ms
       advanceClock(200L)
     }
   }

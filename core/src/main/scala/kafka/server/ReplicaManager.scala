@@ -675,7 +675,7 @@ class ReplicaManager(val config: KafkaConfig,
 
         // try to complete the request immediately, otherwise put it into the purgatory
         // this is because while the delayed produce operation is being created, new
-        // requests may arrive and hence make this operation completable.
+        // requests may arrive and hence make this operation completable. 添加到时间轮上
         delayedProducePurgatory.tryCompleteElseWatch(delayedProduce, producerRequestKeys)
 
       } else {

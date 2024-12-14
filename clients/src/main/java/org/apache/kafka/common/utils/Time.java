@@ -38,6 +38,7 @@ public interface Time {
      * Returns the value returned by `nanoseconds` converted into milliseconds.
      */
     default long hiResClockMs() {
+        // 获取纳秒级别的时间精度并转为毫秒
         return TimeUnit.NANOSECONDS.toMillis(nanoseconds());
     }
 

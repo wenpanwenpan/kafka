@@ -48,6 +48,7 @@ class KafkaFuturePurgatory[T](brokerId: Int,
     val op = new DelayedRaftRequest(future, condition, maxWaitTimeMs)
     synchronized {
       completionException.set(null)
+      // 添加任务到时间轮上
       purgatory.tryCompleteElseWatch(op, Seq(key))
     }
     future
