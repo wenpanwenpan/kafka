@@ -19,11 +19,18 @@ import java.nio.charset.StandardCharsets
 
 buildscript {
   repositories {
+    mavenLocal()
+    //    换成国内仓库
+    maven {url 'https://maven.aliyun.com/repository/grails-core'}
+    maven {url 'https://maven.aliyun.com/repository/gradle-plugin'}
+    maven {url 'https://maven.aliyun.com/repository/jcenter'}
+    maven {url 'https://maven.aliyun.com/repository/public'}
+    maven {url 'https://maven.aliyun.com/repository/central'}
     mavenCentral()
     jcenter()
-    maven {
-      url "https://plugins.gradle.org/m2/"
-    }
+//    maven {
+//      url "https://plugins.gradle.org/m2/"
+//    }
   }
   apply from: file('gradle/buildscript.gradle'), to: buildscript
   apply from: "$rootDir/gradle/dependencies.gradle"
@@ -54,6 +61,14 @@ spotless {
 allprojects {
 
   repositories {
+    mavenLocal()
+//    换成国内仓库
+    maven { url 'https://maven.aliyun.com/repository/grails-core'}
+    maven { url 'https://maven.aliyun.com/repository/jcenter'}
+    maven {url 'https://maven.aliyun.com/repository/gradle-plugin'}
+    maven{ url 'https://maven.aliyun.com/repository/public'}
+    maven {url 'https://maven.aliyun.com/repository/central'}
+    maven{ url 'https://maven.aliyun.com/repository/google'}
     mavenCentral()
   }
 
@@ -743,6 +758,7 @@ project(':core') {
   archivesBaseName = "kafka_${versions.baseScala}"
 
   dependencies {
+    implementation libs.slf4jlog4j
     compile project(':clients')
     compile project(':raft')
     compile libs.jacksonDatabind
