@@ -129,33 +129,55 @@ import static java.util.Collections.emptyList;
  *     updated while processing responses on one thread are visible while creating the subsequent request
  *     on a different thread.</li>
  * </ul>
+ * 消费者消息拉取线程
  */
 public class Fetcher<K, V> implements Closeable {
     private final Logger log;
     private final LogContext logContext;
+    // 消费端网络客户端，负责网络通信实现
     private final ConsumerNetworkClient client;
     private final Time time;
+    // 一次消息拉取需要拉取的最小字节数，默认是1字节，如果增大这个值的话会增大吞吐，但会增加网络延迟，可以通过fetch.min.bytes调整
     private final int minBytes;
+    // 一次消息拉取允许拉取的最大字节数，但这不是绝对的，如果一个分区的第一批记录超过了该值，也会返回。默认为50m
+    // 可以通过参数fetch.max.bytes改变其默认值。同时不能超过broker配置的参数（message.max.bytes）和topic级别的配置(max.message.bytes)
     private final int maxBytes;
+    // 在拉取数据时，如果符合拉取条件的数据消息minBytes时的阻塞时间，默认为500ms，可以通过属性fetch.max.wait.ms调整
     private final int maxWaitMs;
+    // 每个分区返回的最大消息字节数，如果分区中第一批消息大于fetchSize也会返回
     private final int fetchSize;
+    // 失败后重试间隔时间，默认为100ms，一个通过参数retry.backoff.ms调整
     private final long retryBackoffMs;
+    // 向broker端发送请求的最大超时时间，默认是30ms，可以通过参数request.timeout.ms调整
     private final long requestTimeoutMs;
+    // 消费者单次拉取消息最大拉取数据条数，默认500，可以通过参数max.poll.records调整
     private final int maxPollRecords;
+    // 是否检查消息的crcs校验和，默认为true，可以通过check.crcs参数调整
     private final boolean checkCrcs;
     private final String clientRackId;
+    // 消费者元数据
     private final ConsumerMetadata metadata;
+    // 消息拉取的统计服务
     private final FetchManagerMetrics sensors;
+    // 消费者的订阅信息（比如：订阅了哪些分区，订阅模式等）
     private final SubscriptionState subscriptions;
+    // 已完成的fetch请求结果，待消费端从中取出数据（fetcher线程拉取到消息后就会构建成CompletedFetch对象，然后保存到这里，消费者拉取时直接从这里拉取，而不是去broker拉取）
+    // 【重要】该集合里存放的是多个topic分区的拉取结果，而不是某个topic分区拉取结果
     private final ConcurrentLinkedQueue<CompletedFetch> completedFetches;
+    // 消息解压缩缓冲池
     private final BufferSupplier decompressionBufferSupplier = BufferSupplier.create();
+    // key反序列化器
     private final Deserializer<K> keyDeserializer;
+    // value反序列化器
     private final Deserializer<V> valueDeserializer;
+    // 消费者消息隔离级别（与事务消息有关）
     private final IsolationLevel isolationLevel;
+    // 拉取会话监听器
     private final Map<Integer, FetchSessionHandler> sessionHandlers;
     private final AtomicReference<RuntimeException> cachedListOffsetsException = new AtomicReference<>();
     private final AtomicReference<RuntimeException> cachedOffsetForLeaderException = new AtomicReference<>();
     private final OffsetsForLeaderEpochClient offsetsForLeaderEpochClient;
+    // fetcher线程正在拉取数据的节点ID集合
     private final Set<Integer> nodesWithPendingFetchRequests;
     private final ApiVersions apiVersions;
     private final AtomicInteger metadataUpdateVersion = new AtomicInteger(-1);
@@ -234,26 +256,34 @@ public class Fetcher<K, V> implements Closeable {
     }
 
     /**
+     * 是否有分区可以供消费者获取数据
      * Return whether we have any completed fetches that are fetchable. This method is thread-safe.
      * @return true if there are completed fetches that can be returned, false otherwise
      */
     public boolean hasAvailableFetches() {
+        // 只要有任何一个分区在缓存里有数据，则返回true
         return completedFetches.stream().anyMatch(fetch -> subscriptions.isFetchable(fetch.partition));
     }
 
     /**
      * Set-up a fetch request for any node that we have assigned partitions for which doesn't already have
      * an in-flight fetch or pending fetch data.
+     * 发送拉取消息请求给broker
      * @return number of fetches sent
      */
     public synchronized int sendFetches() {
         // Update metrics in case there was an assignment change
         sensors.maybeUpdateAssignment(subscriptions);
 
+        // 1、【重要】封装node节点对应的fetch请求map
         Map<Node, FetchSessionHandler.FetchRequestData> fetchRequestMap = prepareFetchRequests();
+        // 遍历每个节点，按照node节点分别做发送请求的准备工作
         for (Map.Entry<Node, FetchSessionHandler.FetchRequestData> entry : fetchRequestMap.entrySet()) {
+            // 获取拉取的目标节点
             final Node fetchTarget = entry.getKey();
+            // 获取拉取的请求数据
             final FetchSessionHandler.FetchRequestData data = entry.getValue();
+            // 构建fetch请求
             final FetchRequest.Builder request = FetchRequest.Builder
                     .forConsumer(this.maxWaitMs, this.minBytes, data.toSend())
                     .isolationLevel(isolationLevel)
@@ -265,17 +295,21 @@ public class Fetcher<K, V> implements Closeable {
             if (log.isDebugEnabled()) {
                 log.debug("Sending {} {} to broker {}", isolationLevel, data.toString(), fetchTarget);
             }
+            // 2、给fetchTarget节点发送请求（将请求放入unsent发送队列）
             RequestFuture<ClientResponse> future = client.send(fetchTarget, request);
             // We add the node to the set of nodes with pending fetch requests before adding the
             // listener because the future may have been fulfilled on another thread (e.g. during a
             // disconnection being handled by the heartbeat thread) which will mean the listener
             // will be invoked synchronously.
+            // 3、设置响应的回调处理，将服务端返回的数据通过add方法缓存到队列中
             this.nodesWithPendingFetchRequests.add(entry.getKey().id());
+            // 4、注册一个监听器到 future 上，当发送成功后就会调用监听器
             future.addListener(new RequestFutureListener<ClientResponse>() {
                 @Override
                 public void onSuccess(ClientResponse resp) {
                     synchronized (Fetcher.this) {
                         try {
+                            // 获取拉取请求响应
                             @SuppressWarnings("unchecked")
                             FetchResponse<Records> response = (FetchResponse<Records>) resp.responseBody();
                             FetchSessionHandler handler = sessionHandler(fetchTarget.id());
@@ -288,12 +322,15 @@ public class Fetcher<K, V> implements Closeable {
                                 return;
                             }
 
+                            // 响应中的的每个topic分区信息
                             Set<TopicPartition> partitions = new HashSet<>(response.responseData().keySet());
                             FetchResponseMetricAggregator metricAggregator = new FetchResponseMetricAggregator(sensors, partitions);
 
+                            // 可以看到是以node维度来拉取数据的，一次性拉取该node上的多个分区的数据
                             for (Map.Entry<TopicPartition, FetchResponse.PartitionData<Records>> entry : response.responseData().entrySet()) {
                                 TopicPartition partition = entry.getKey();
                                 FetchRequest.PartitionData requestData = data.sessionPartitions().get(partition);
+                                // 分区数据缺失
                                 if (requestData == null) {
                                     String message;
                                     if (data.metadata().isFull()) {
@@ -307,17 +344,21 @@ public class Fetcher<K, V> implements Closeable {
                                     }
 
                                     // Received fetch response for missing session partition
+                                    // 收到了缺失分区的响应
                                     throw new IllegalStateException(message);
                                 } else {
                                     long fetchOffset = requestData.fetchOffset;
+                                    // 拉取到的分区数据
                                     FetchResponse.PartitionData<Records> partitionData = entry.getValue();
 
                                     log.debug("Fetch {} at offset {} for partition {} returned fetch data {}",
                                             isolationLevel, fetchOffset, partition, partitionData);
 
+                                    // 拉取到的消息数据所属批次迭代器
                                     Iterator<? extends RecordBatch> batches = partitionData.records().batches().iterator();
                                     short responseVersion = resp.requestHeader().apiVersion();
 
+                                    // 【非常重要】将拉取完成的fetch保存到 completedFetches 中
                                     completedFetches.add(new CompletedFetch(partition, partitionData,
                                             metricAggregator, batches, fetchOffset, responseVersion));
                                 }
@@ -325,6 +366,7 @@ public class Fetcher<K, V> implements Closeable {
 
                             sensors.fetchLatency.record(resp.requestLatencyMs());
                         } finally {
+                            // 从正在拉取数据的节点列表中移除该节点（因为该节点已经接收到响应了）
                             nodesWithPendingFetchRequests.remove(fetchTarget.id());
                         }
                     }
@@ -339,6 +381,7 @@ public class Fetcher<K, V> implements Closeable {
                                 handler.handleError(e);
                             }
                         } finally {
+                            // 从正在拉取数据的节点列表中移除该节点（因为该节点已经接收到响应了）
                             nodesWithPendingFetchRequests.remove(fetchTarget.id());
                         }
                     }
@@ -599,18 +642,29 @@ public class Fetcher<K, V> implements Closeable {
      * @throws TopicAuthorizationException If there is TopicAuthorization error in fetchResponse.
      */
     public Map<TopicPartition, List<ConsumerRecord<K, V>>> fetchedRecords() {
+        // 1、按分区组织的消息拉取记录，这也是该方法的返回值
         Map<TopicPartition, List<ConsumerRecord<K, V>>> fetched = new HashMap<>();
+        // 存储暂停的，已完成的拉取数据
         Queue<CompletedFetch> pausedCompletedFetches = new ArrayDeque<>();
+        // 2、消费者最大获取消息条数，可以通过参数：max.poll.records参数来调整，默认是500
         int recordsRemaining = maxPollRecords;
 
         try {
+            // 3、通过while循环不断的从缓存中获取消息，直到获取到recordsRemaining条为止
             while (recordsRemaining > 0) {
+                // 4、判断当前获取消息的拉取任务的nextInLineFetch是否为空 或 已被消费，如果为空，则从completedFetches队列里获取一批消息
+                // nextInLineFetch 是一个 CompletedFetch 类型，指的是一个分区的消息集合
                 if (nextInLineFetch == null || nextInLineFetch.isConsumed) {
+                    // 从completedFetches队列里获取一批消息
                     CompletedFetch records = completedFetches.peek();
+                    // 5、判断 completedFetches 是否为空，如果为空则说明缓存里没有数据，直接返回空集合。
+                    // 如果 completedFetches 不为空，则把 completedFetches 里的第一个CompletedFetch数据赋值给 nextInLineFetch
                     if (records == null) break;
 
+                    // 如果待处理的拉取任务未初始化，则初始化该任务
                     if (records.notInitialized()) {
                         try {
+                            // 初始化拉取记录并赋值给 nextInLineFetch 对象
                             nextInLineFetch = initializeCompletedFetch(records);
                         } catch (Exception e) {
                             // Remove a completedFetch upon a parse with exception if (1) it contains no records, and
@@ -619,76 +673,96 @@ public class Fetcher<K, V> implements Closeable {
                             // in cases such as the TopicAuthorizationException, and the second condition ensures that no
                             // potential data loss due to an exception in a following record.
                             FetchResponse.PartitionData<Records> partition = records.partitionData;
+                            // 如果 CompletedFetch 里没有记录，那么就把该 CompletedFetch 从队列里移除
                             if (fetched.isEmpty() && (partition.records() == null || partition.records().sizeInBytes() == 0)) {
                                 completedFetches.poll();
                             }
                             throw e;
                         }
                     } else {
+                        // 如果该批次已经初始化，则直接赋值给nextInLineFetch即可
                         nextInLineFetch = records;
                     }
+                    // 把已经赋值给 nextInLineFetch 的元素出队列
                     completedFetches.poll();
+                    // 如果分区已经暂停拉取，则将拉取的记录放回到已拉取完成的任务队列，以便在后续的轮询中重新返回这些记录
                 } else if (subscriptions.isPaused(nextInLineFetch.partition)) {
                     // when the partition is paused we add the records back to the completedFetches queue instead of draining
                     // them so that they can be returned on a subsequent poll if the partition is resumed at that time
                     log.debug("Skipping fetching records for assigned partition {} because it is paused", nextInLineFetch.partition);
                     pausedCompletedFetches.add(nextInLineFetch);
+                    // 将 nextInLineFetch 置为空
                     nextInLineFetch = null;
                 } else {
+                    // 6、如果nextInLineFetch不为空，则从 nextInLineFetch 中最大获取 recordsRemaining 条消息记录
                     List<ConsumerRecord<K, V>> records = fetchRecords(nextInLineFetch, recordsRemaining);
 
+                    // 7、把获取到的消息进行封装
                     if (!records.isEmpty()) {
                         TopicPartition partition = nextInLineFetch.partition;
+                        // 将拉取到的记录添加到该分区对应的消息数据队列里
                         List<ConsumerRecord<K, V>> currentRecords = fetched.get(partition);
+                        // 如果该分区上次没有拉取过消息，则直接添加，否则创建一个新集合，把上次拉取到的消息和本次拉取到的消息合并
                         if (currentRecords == null) {
                             fetched.put(partition, records);
                         } else {
                             // this case shouldn't usually happen because we only send one fetch at a time per partition,
                             // but it might conceivably happen in some rare cases (such as partition leader changes).
                             // we have to copy to a new list because the old one may be immutable
+                            // 极少出现的情况，同一个分区存在多次拉取任务，将拉取的结果进行合并，然后添加到fetched集合中
                             List<ConsumerRecord<K, V>> newRecords = new ArrayList<>(records.size() + currentRecords.size());
                             newRecords.addAll(currentRecords);
                             newRecords.addAll(records);
                             fetched.put(partition, newRecords);
                         }
+                        // 重新计算还需要获取多少条消息
                         recordsRemaining -= records.size();
                     }
                 }
             }
         } catch (KafkaException e) {
+            // 出现异常时，如果没有从缓存中获取到消息，则抛出异常。如果有记录，则不抛出异常，返回已获取到的数据
             if (fetched.isEmpty())
                 throw e;
         } finally {
             // add any polled completed fetches for paused partitions back to the completed fetches queue to be
             // re-evaluated in the next poll
+            // 最终将暂停拉取的记录放回到已拉取完成的任务队列中
             completedFetches.addAll(pausedCompletedFetches);
         }
 
+        // 8、返回已拉取到的数据
         return fetched;
     }
 
+    // 从 completedFetch 中获取指定条数的消息记录
     private List<ConsumerRecord<K, V>> fetchRecords(CompletedFetch completedFetch, int maxRecords) {
+        // 该消费者没有订阅该分区
         if (!subscriptions.isAssigned(completedFetch.partition)) {
             // this can happen when a rebalance happened before fetched records are returned to the consumer's poll call
             log.debug("Not returning fetched records for partition {} since it is no longer assigned",
                     completedFetch.partition);
+            // 该分区不可拉取
         } else if (!subscriptions.isFetchable(completedFetch.partition)) {
             // this can happen when a partition is paused before fetched records are returned to the consumer's
             // poll call or if the offset is being reset
             log.debug("Not returning fetched records for assigned partition {} since it is no longer fetchable",
                     completedFetch.partition);
         } else {
+            // 获取该分区的拉取位置
             FetchPosition position = subscriptions.position(completedFetch.partition);
             if (position == null) {
                 throw new IllegalStateException("Missing position for fetchable partition " + completedFetch.partition);
             }
 
             if (completedFetch.nextFetchOffset == position.offset) {
+                // 从 completedFetch 中 最多获取maxRecords条记录
                 List<ConsumerRecord<K, V>> partRecords = completedFetch.fetchRecords(maxRecords);
 
                 log.trace("Returning {} fetched records at offset {} for assigned partition {}",
                         partRecords.size(), position, completedFetch.partition);
 
+                // 如果该分区的拉取位置大于当前位置，则更新拉取位置
                 if (completedFetch.nextFetchOffset > position.offset) {
                     FetchPosition nextPosition = new FetchPosition(
                             completedFetch.nextFetchOffset,
@@ -698,6 +772,7 @@ public class Fetcher<K, V> implements Closeable {
                     subscriptions.position(completedFetch.partition, nextPosition);
                 }
 
+                // 记录统计指标
                 Long partitionLag = subscriptions.partitionLag(completedFetch.partition, isolationLevel);
                 if (partitionLag != null)
                     this.sensors.recordPartitionLag(completedFetch.partition, partitionLag);
@@ -707,6 +782,7 @@ public class Fetcher<K, V> implements Closeable {
                     this.sensors.recordPartitionLead(completedFetch.partition, lead);
                 }
 
+                // 返回从 completedFetch 里拉取到的记录
                 return partRecords;
             } else {
                 // these records aren't next in line based on the last consumed position, ignore them
@@ -1099,33 +1175,44 @@ public class Fetcher<K, V> implements Closeable {
         }
     }
 
+    // 获取可以向broker发起拉取请求的的topic分区集合
+    // 比如：该分区在本地缓存中已经存在拉取的记录（还没有被消费者消费）
     private List<TopicPartition> fetchablePartitions() {
+        // 需要排除的分区集合
         Set<TopicPartition> exclude = new HashSet<>();
+        // 如果 nextInLineFetch 中有未消费的批次，则说明该分区不需要再次拉取
         if (nextInLineFetch != null && !nextInLineFetch.isConsumed) {
             exclude.add(nextInLineFetch.partition);
         }
+        // 已经拉取到本地缓存中的批次对应的分区也需要排除，本次不在拉取
         for (CompletedFetch completedFetch : completedFetches) {
             exclude.add(completedFetch.partition);
         }
+        // 从该consumer订阅的分区里去掉需要排除的分区
         return subscriptions.fetchablePartitions(tp -> !exclude.contains(tp));
     }
 
     /**
      * Determine which replica to read from.
+     * 选择读取的副本节点（如果设置了优先读取副本），否则返回leader副本
      */
     Node selectReadReplica(TopicPartition partition, Node leaderReplica, long currentTimeMs) {
+        // 获取该分区设置的首选读取副本ID（如果设置了）
         Optional<Integer> nodeId = subscriptions.preferredReadReplica(partition, currentTimeMs);
         if (nodeId.isPresent()) {
+            // 如果设置了首选读取副本并且该副本存在于元数据中，则选择首选副本作为读取节点
             Optional<Node> node = nodeId.flatMap(id -> metadata.fetch().nodeIfOnline(partition, id));
             if (node.isPresent()) {
                 return node.get();
             } else {
                 log.trace("Not fetching from {} for partition {} since it is marked offline or is missing from our metadata," +
                           " using the leader instead.", nodeId, partition);
+                // 如果首选副本不在线，或者不在元数据中，则返回leader副本
                 subscriptions.clearPreferredReadReplica(partition);
                 return leaderReplica;
             }
         } else {
+            // 如果没有设置首选副本，则返回leader副本
             return leaderReplica;
         }
     }
@@ -1135,10 +1222,15 @@ public class Fetcher<K, V> implements Closeable {
      * we should check that all of the assignments have a valid position.
      */
     private void validatePositionsOnMetadataChange() {
+        // 获取最新的元数据版本
         int newMetadataUpdateVersion = metadata.updateVersion();
+        // 如果元数据版本更新，则需要重新验证每个分区的读取位置
         if (metadataUpdateVersion.getAndSet(newMetadataUpdateVersion) != newMetadataUpdateVersion) {
+            // 遍历该消费者分配到的每个分区
             subscriptions.assignedPartitions().forEach(topicPartition -> {
+                // 获取该分区当前的leader和epoch
                 ConsumerMetadata.LeaderAndEpoch leaderAndEpoch = metadata.currentLeader(topicPartition);
+                // 如果当前leader已经无法处理该分区，则需要切换新leader
                 subscriptions.maybeValidatePositionForCurrentLeader(apiVersions, topicPartition, leaderAndEpoch);
             });
         }
@@ -1147,20 +1239,26 @@ public class Fetcher<K, V> implements Closeable {
     /**
      * Create fetch requests for all nodes for which we have assigned partitions
      * that have no existing requests in flight.
+     * 准备拉取请求，获取哪些分区本次可以拉取，为这些可以拉去的分区构建拉取请求
      */
     private Map<Node, FetchSessionHandler.FetchRequestData> prepareFetchRequests() {
+        // 1、可以拉取的节点和请求，定义一个有序map，按照添加顺序依次发送到指定节点（key为拉取节点，value为拉取请求）
         Map<Node, FetchSessionHandler.Builder> fetchable = new LinkedHashMap<>();
-
+        // 验证分配给该消费者组的元数据是否发生了变化
         validatePositionsOnMetadataChange();
 
+        // 获取当前时间，用于后面选择读副本时判断
         long currentTimeMs = time.milliseconds();
 
+        // 遍历可以拉取的分区，这里的 fetchablePartitions 方法表示获取可以拉取的分区
         for (TopicPartition partition : fetchablePartitions()) {
+            // 获取该分区的最新读取位置
             FetchPosition position = this.subscriptions.position(partition);
             if (position == null) {
                 throw new IllegalStateException("Missing position for fetchable partition " + partition);
             }
 
+            // 获取该分区当前的leader，如果没有leader，则请求更新元数据
             Optional<Node> leaderOpt = position.currentLeader.leader;
             if (!leaderOpt.isPresent()) {
                 log.debug("Requesting metadata update for partition {} since the position {} is missing the current leader node", partition, position);
@@ -1169,7 +1267,9 @@ public class Fetcher<K, V> implements Closeable {
             }
 
             // Use the preferred read replica if set, otherwise the position's leader
+            // 选择该分区的读取副本节点
             Node node = selectReadReplica(partition, leaderOpt.get(), currentTimeMs);
+            // 如果该节点不可用，则会进行权限认证失败重试
             if (client.isUnavailable(node)) {
                 client.maybeThrowAuthFailure(node);
 
@@ -1177,21 +1277,27 @@ public class Fetcher<K, V> implements Closeable {
                 // going to be failed anyway before being sent, so skip the send for now
                 log.trace("Skipping fetch for partition {} because node {} is awaiting reconnect backoff", partition, node);
             } else if (this.nodesWithPendingFetchRequests.contains(node.id())) {
+                // 如果指定节点尚有未处理的fetch请求，则跳过该节点的拉取请求
                 log.trace("Skipping fetch for partition {} because previous request to {} has not been processed", partition, node);
             } else {
                 // if there is a leader and no in-flight requests, issue a new fetch
+                // 如果该节点有leader并且又没有处理中的fetch请求，则需要构建一个fetch请求
                 FetchSessionHandler.Builder builder = fetchable.get(node);
                 if (builder == null) {
                     int id = node.id();
                     FetchSessionHandler handler = sessionHandler(id);
+                    // 如果还没有与该节点建立过通信会话，则先建立
                     if (handler == null) {
                         handler = new FetchSessionHandler(logContext, id);
                         sessionHandlers.put(id, handler);
                     }
+                    // 为该节点新建fetch请求构建器
                     builder = handler.newBuilder();
+                    // 将节点与其对应的fetch请求构建器保存到fetchable中
                     fetchable.put(node, builder);
                 }
 
+                // 向fetch请求构建器中添加该分区的拉取请求
                 builder.add(partition, new FetchRequest.PartitionData(position.offset,
                     FetchRequest.INVALID_LOG_START_OFFSET, this.fetchSize,
                     position.currentLeader.epoch, Optional.empty()));
@@ -1201,6 +1307,7 @@ public class Fetcher<K, V> implements Closeable {
             }
         }
 
+        // 将fetchable中的fetch数据转换为FetchRequestData并发乳map中
         Map<Node, FetchSessionHandler.FetchRequestData> reqs = new LinkedHashMap<>();
         for (Map.Entry<Node, FetchSessionHandler.Builder> entry : fetchable.entrySet()) {
             reqs.put(entry.getKey(), entry.getValue().build());
@@ -1228,13 +1335,17 @@ public class Fetcher<K, V> implements Closeable {
      * Initialize a CompletedFetch object.
      */
     private CompletedFetch initializeCompletedFetch(CompletedFetch nextCompletedFetch) {
+        // 获取这批消息所属的分区
         TopicPartition tp = nextCompletedFetch.partition;
+        // 拉取的分区数据
         FetchResponse.PartitionData<Records> partition = nextCompletedFetch.partitionData;
+        // 下次要拉取的偏移量
         long fetchOffset = nextCompletedFetch.nextFetchOffset;
         CompletedFetch completedFetch = null;
         Errors error = partition.error();
 
         try {
+            // 订阅的分区无效
             if (!subscriptions.hasValidPosition(tp)) {
                 // this can happen when a rebalance happened while fetch is still in-flight
                 log.debug("Ignoring fetched records for partition {} since it no longer has valid position", tp);
@@ -1250,7 +1361,9 @@ public class Fetcher<K, V> implements Closeable {
 
                 log.trace("Preparing to read {} bytes of data for partition {} with offset {}",
                         partition.records().sizeInBytes(), tp, position);
+                // 获取分区记录所属的批次迭代器
                 Iterator<? extends RecordBatch> batches = partition.records().batches().iterator();
+                // 指向 nextCompletedFetch
                 completedFetch = nextCompletedFetch;
 
                 if (!batches.hasNext() && partition.records().sizeInBytes() > 0) {
@@ -1271,6 +1384,7 @@ public class Fetcher<K, V> implements Closeable {
                     }
                 }
 
+                // 更新分区高水位
                 if (partition.highWatermark() >= 0) {
                     log.trace("Updating high watermark for partition {} to {}", tp, partition.highWatermark());
                     subscriptions.updateHighWatermark(tp, partition.highWatermark());
@@ -1286,6 +1400,7 @@ public class Fetcher<K, V> implements Closeable {
                     subscriptions.updateLastStableOffset(tp, partition.lastStableOffset());
                 }
 
+                // 更新优先读取的副本
                 if (partition.preferredReadReplica().isPresent()) {
                     subscriptions.updatePreferredReadReplica(completedFetch.partition, partition.preferredReadReplica().get(), () -> {
                         long expireTimeMs = time.milliseconds() + metadata.metadataExpireMs();
@@ -1295,7 +1410,9 @@ public class Fetcher<K, V> implements Closeable {
                     });
                 }
 
+                // 该批次已初始化
                 nextCompletedFetch.initialized = true;
+                // 如果是如下几类异常，则更新元数据
             } else if (error == Errors.NOT_LEADER_OR_FOLLOWER ||
                        error == Errors.REPLICA_NOT_AVAILABLE ||
                        error == Errors.KAFKA_STORAGE_ERROR ||
@@ -1303,9 +1420,11 @@ public class Fetcher<K, V> implements Closeable {
                        error == Errors.OFFSET_NOT_AVAILABLE) {
                 log.debug("Error in fetch for partition {}: {}", tp, error.exceptionName());
                 this.metadata.requestUpdate();
+                // 分区或topic未知，则更新下元数据
             } else if (error == Errors.UNKNOWN_TOPIC_OR_PARTITION) {
                 log.warn("Received unknown topic or partition error in fetch for partition {}", tp);
                 this.metadata.requestUpdate();
+                // 读取的偏移量超过范围
             } else if (error == Errors.OFFSET_OUT_OF_RANGE) {
                 Optional<Integer> clearedReplicaId = subscriptions.clearPreferredReadReplica(tp);
                 if (!clearedReplicaId.isPresent()) {
@@ -1451,25 +1570,37 @@ public class Fetcher<K, V> implements Closeable {
         return fetchThrottleTimeSensor;
     }
 
+    // 拉取结果，fetcher线程会从broker拉取消息（一个分区对应的一批消息就是一个CompletedFetch对象），
+    // 消费者从 CompletedFetch 中拉取指定条数的消息进行消费
     private class CompletedFetch {
+        // 数据所属的分区
         private final TopicPartition partition;
+        // 拉取到的消息所属的批次迭代器
         private final Iterator<? extends RecordBatch> batches;
         private final Set<Long> abortedProducerIds;
         private final PriorityQueue<FetchResponse.AbortedTransaction> abortedTransactions;
+        // 该分区的消息数据
         private final FetchResponse.PartitionData<Records> partitionData;
         private final FetchResponseMetricAggregator metricAggregator;
         private final short responseVersion;
 
+        // 已被消费者读取的记录
         private int recordsRead;
+        // 已被消费者读取的字节数
         private int bytesRead;
+        // 当前批次
         private RecordBatch currentBatch;
+        // 最近被消费者读取的记录
         private Record lastRecord;
         private CloseableIterator<Record> records;
+        // 消费者下次拉取的偏移量（下次拉取从哪里开始拉）
         private long nextFetchOffset;
         private Optional<Integer> lastEpoch;
+        // 该 CompletedFetch 是否已被消费完毕
         private boolean isConsumed = false;
         private Exception cachedRecordException = null;
         private boolean corruptLastRecord = false;
+        // 拉取结果是否已初始化
         private boolean initialized = false;
 
         private CompletedFetch(TopicPartition partition,
@@ -1593,6 +1724,7 @@ public class Fetcher<K, V> implements Closeable {
             }
         }
 
+        // 从
         private List<ConsumerRecord<K, V>> fetchRecords(int maxRecords) {
             // Error when fetching the next record before deserialization.
             if (corruptLastRecord)
@@ -1610,14 +1742,18 @@ public class Fetcher<K, V> implements Closeable {
                     // use the last record to do deserialization again.
                     if (cachedRecordException == null) {
                         corruptLastRecord = true;
+                        // 从 CompletedFetch 中获取一条记录，获取后会更新相关的数据
                         lastRecord = nextFetchedRecord();
                         corruptLastRecord = false;
                     }
+                    // CompletedFetch里的消息已经被读取完成了，则跳出循环
                     if (lastRecord == null)
                         break;
                     records.add(parseRecord(partition, currentBatch, lastRecord));
+                    // 更新已被消费者读取的消息记录数和消息字节数
                     recordsRead++;
                     bytesRead += lastRecord.sizeInBytes();
+                    // 消费者下次拉取的偏移量
                     nextFetchOffset = lastRecord.offset() + 1;
                     // In some cases, the deserialization may have thrown an exception and the retry may succeed,
                     // we allow user to move forward in this case.

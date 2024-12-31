@@ -47,8 +47,11 @@ import java.util.concurrent.atomic.AtomicReference;
 public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
 
     private static final Object INCOMPLETE_SENTINEL = new Object();
+    // 存储future的结果(正常响应结果或异常信息)
     private final AtomicReference<Object> result = new AtomicReference<>(INCOMPLETE_SENTINEL);
+    // 注册在该future上的listeners
     private final ConcurrentLinkedQueue<RequestFutureListener<T>> listeners = new ConcurrentLinkedQueue<>();
+    // 当任务完成时，completedLatch减一，此时awaitDone方法返回true
     private final CountDownLatch completedLatch = new CountDownLatch(1);
 
     /**
@@ -60,6 +63,7 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
     }
 
     public boolean awaitDone(long timeout, TimeUnit unit) throws InterruptedException {
+        // 如果任务还没有完成，则等待
         return completedLatch.await(timeout, unit);
     }
 
@@ -70,8 +74,10 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
      */
     @SuppressWarnings("unchecked")
     public T value() {
+        // 如果任务还没有完成或执行失败，则不允许获取任务结果，抛出异常
         if (!succeeded())
             throw new IllegalStateException("Attempt to retrieve value from future which hasn't successfully completed");
+        // 返回任务执行结果
         return (T) result.get();
     }
 
@@ -121,11 +127,14 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
      */
     public void complete(T value) {
         try {
+            // 如果执行结果有异常，则抛出异常
             if (value instanceof RuntimeException)
                 throw new IllegalArgumentException("The argument to complete can not be an instance of RuntimeException");
 
+            // 如果result不是INCOMPLETE_SENTINEL，则说明complete方法已经被调用过了，禁止重复调用
             if (!result.compareAndSet(INCOMPLETE_SENTINEL, value))
                 throw new IllegalStateException("Invalid attempt to complete a request future which is already complete");
+            // 触发所有注册在该future上的listener的onSuccess方法
             fireSuccess();
         } finally {
             completedLatch.countDown();
@@ -160,8 +169,11 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
         raise(error.exception());
     }
 
+    // 任务完成
     private void fireSuccess() {
+        // 获取任务结果
         T value = value();
+        // 调用注册在该future上的所有listener的onSuccess方法
         while (true) {
             RequestFutureListener<T> listener = listeners.poll();
             if (listener == null)
@@ -185,9 +197,12 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
      * @param listener non-null listener to add
      */
     public void addListener(RequestFutureListener<T> listener) {
+        // 添加监听器到future的监听器队列中
         this.listeners.add(listener);
+        // 添加完成后判断一下，如果任务已经失败了，则回调失败方法
         if (failed())
             fireFailure();
+            // 添加完成后判断一下，如果任务已经成功了，则回调成功方法
         else if (succeeded())
             fireSuccess();
     }
@@ -199,7 +214,9 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
      * @return The new future
      */
     public <S> RequestFuture<S> compose(final RequestFutureAdapter<T, S> adapter) {
+        // 适配器
         final RequestFuture<S> adapted = new RequestFuture<>();
+        // 添加监听器到future的监听器队列中
         addListener(new RequestFutureListener<T>() {
             @Override
             public void onSuccess(T value) {
@@ -211,10 +228,12 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
                 adapter.onFailure(e, adapted);
             }
         });
+        // 注意：这里返回的是一个新的future了，不在是原来的future
         return adapted;
     }
 
     public void chain(final RequestFuture<T> future) {
+        // 注册一个监听器到Future上
         addListener(new RequestFutureListener<T>() {
             @Override
             public void onSuccess(T value) {

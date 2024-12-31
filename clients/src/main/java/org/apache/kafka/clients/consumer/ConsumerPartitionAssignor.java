@@ -93,8 +93,10 @@ public interface ConsumerPartitionAssignor {
     String name();
 
     final class Subscription {
+        // 订阅的topic集合
         private final List<String> topics;
         private final ByteBuffer userData;
+        // 分区
         private final List<TopicPartition> ownedPartitions;
         private Optional<String> groupInstanceId;
 
@@ -134,7 +136,9 @@ public interface ConsumerPartitionAssignor {
         }
     }
 
+    // topic分区分配结果
     final class Assignment {
+        // 分配给某个consumer的topic分区
         private List<TopicPartition> partitions;
         private ByteBuffer userData;
 

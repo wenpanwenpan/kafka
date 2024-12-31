@@ -50,8 +50,10 @@ package org.apache.kafka.common.utils;
 public class Timer {
     private final Time time;
     private long startMs;
+    // 当前时间戳
     private long currentTimeMs;
     private long deadlineMs;
+    // 超时时间（非时间戳）
     private long timeoutMs;
 
     Timer(Time time, long timeoutMs) {
@@ -103,6 +105,7 @@ public class Timer {
             throw new IllegalArgumentException("Invalid negative timeout " + timeoutMs);
 
         this.timeoutMs = timeoutMs;
+        // 将开始时间设置为 currentTimeMs
         this.startMs = this.currentTimeMs;
 
         if (currentTimeMs > Long.MAX_VALUE - timeoutMs)

@@ -79,10 +79,11 @@ public class SubscriptionState {
     /* the type of subscription */
     private SubscriptionType subscriptionType;
 
-    /* the pattern user has requested */
+    /* the pattern user has requested，订阅模式 */
     private Pattern subscribedPattern;
 
     /* the list of topics the user has requested */
+    // 消费者订阅的topic集合
     private Set<String> subscription;
 
     /* The list of topics the group has subscribed to. This may include some topics which are not part
@@ -91,12 +92,14 @@ public class SubscriptionState {
     private Set<String> groupSubscription;
 
     /* the partitions that are currently assigned, note that the order of partition matters (see FetchBuilder for more details) */
+    // topic 分区状态，管理该分区拉取相关信息
     private final PartitionStates<TopicPartitionState> assignment;
 
     /* Default offset reset strategy */
     private final OffsetResetStrategy defaultResetStrategy;
 
     /* User-provided listener to be invoked when assignment changes */
+    // 消费者重平衡监听器
     private ConsumerRebalanceListener rebalanceListener;
 
     private int assignmentId = 0;
@@ -155,14 +158,19 @@ public class SubscriptionState {
      */
     private void setSubscriptionType(SubscriptionType type) {
         if (this.subscriptionType == SubscriptionType.NONE)
+            // 按照设置的topic开始订阅，自动分配分区
             this.subscriptionType = type;
+        // 如果传入的类型和当前类型不一致，则抛出异常
         else if (this.subscriptionType != type)
             throw new IllegalStateException(SUBSCRIPTION_EXCEPTION_MESSAGE);
     }
 
     public synchronized boolean subscribe(Set<String> topics, ConsumerRebalanceListener listener) {
+        // 注册重平衡监听器
         registerRebalanceListener(listener);
+        // 按照设置的topic开始订阅，自动分配分区
         setSubscriptionType(SubscriptionType.AUTO_TOPICS);
+        // 如果订阅的topic和以前订阅的一致，就不需要修改订阅信息。如果不一致，则需要修改
         return changeSubscription(topics);
     }
 
@@ -180,10 +188,12 @@ public class SubscriptionState {
         return changeSubscription(topics);
     }
 
+    // 修改消费者订阅的topic集合
     private boolean changeSubscription(Set<String> topicsToSubscribe) {
+        // 如果订阅的topic和以前订阅的一致，就不需要修改订阅信息。如果不一致，则需要修改
         if (subscription.equals(topicsToSubscribe))
             return false;
-
+        // 更新消费者订阅的topic集合
         subscription = topicsToSubscribe;
         return true;
     }
@@ -599,8 +609,10 @@ public class SubscriptionState {
         return assignedState(tp).clearPreferredReadReplica();
     }
 
+    // 获取所有订阅的分区的位移和元数据
     public synchronized Map<TopicPartition, OffsetAndMetadata> allConsumed() {
         Map<TopicPartition, OffsetAndMetadata> allConsumed = new HashMap<>();
+        // 遍历订阅的每个分区
         assignment.forEach((topicPartition, partitionState) -> {
             if (partitionState.hasValidPosition())
                 allConsumed.put(topicPartition, new OffsetAndMetadata(partitionState.position.offset,
@@ -738,15 +750,22 @@ public class SubscriptionState {
 
     private static class TopicPartitionState {
 
+        // 该分区的拉取状态
         private FetchState fetchState;
+        // 该分区拉取到什么位置了
         private FetchPosition position; // last consumed position
 
+        // 分区高水位
         private Long highWatermark; // the high watermark from last fetch
+        // 日志起始位移
         private Long logStartOffset; // the log start offset
         private Long lastStableOffset;
+        // 是否暂停拉取
         private boolean paused;  // whether this partition has been paused by the user
         private OffsetResetStrategy resetStrategy;  // the strategy to use if the offset needs resetting
+        // 下次重试时间
         private Long nextRetryTimeMs;
+        // 优先从哪个节点读取数据
         private Integer preferredReadReplica;
         private Long preferredReadReplicaExpireTimeMs;
 

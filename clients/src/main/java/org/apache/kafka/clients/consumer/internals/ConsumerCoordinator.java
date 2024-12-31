@@ -90,6 +90,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     private final GroupRebalanceConfig rebalanceConfig;
     private final Logger log;
     private final List<ConsumerPartitionAssignor> assignors;
+    // 消费者元数据
     private final ConsumerMetadata metadata;
     private final ConsumerCoordinatorMetrics sensors;
     private final SubscriptionState subscriptions;
@@ -105,10 +106,12 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
     private boolean isLeader = false;
     private Set<String> joinedSubscription;
+    // 元数据快照
     private MetadataSnapshot metadataSnapshot;
     private MetadataSnapshot assignmentSnapshot;
     private Timer nextAutoCommitTimer;
     private AtomicBoolean asyncCommitFenced;
+    // 消费者组元数据信息
     private ConsumerGroupMetadata groupMetadata;
     private final boolean throwOnFetchStableOffsetsUnsupported;
 
@@ -343,10 +346,14 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         return null;
     }
 
+    // 入组完成，组协调器已经下发该消费者负责的分区，在这里消费者处理善后工作
     @Override
     protected void onJoinComplete(int generation,
+                                  // 消费者组里的该消费者ID
                                   String memberId,
+                                  // 分区分配策略
                                   String assignmentStrategy,
+                                  // 该消费者分到的所负责的topic分区信息
                                   ByteBuffer assignmentBuffer) {
         log.debug("Executing onJoinComplete with generation {} and memberId {}", generation, memberId);
 
@@ -354,31 +361,36 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         if (!isLeader)
             assignmentSnapshot = null;
 
+        // 通过分区分配策略名称获取分配策略实例
         ConsumerPartitionAssignor assignor = lookupAssignor(assignmentStrategy);
         if (assignor == null)
             throw new IllegalStateException("Coordinator selected invalid assignment protocol: " + assignmentStrategy);
 
         // Give the assignor a chance to update internal state based on the received assignment
+        // 创建 ConsumerGroupMetadata 用于记录消费者组的元数据信息
         groupMetadata = new ConsumerGroupMetadata(rebalanceConfig.groupId, generation, memberId, rebalanceConfig.groupInstanceId);
 
         Set<TopicPartition> ownedPartitions = new HashSet<>(subscriptions.assignedPartitions());
 
         // should at least encode the short version
+        // 检查assignmentBuffer内剩余字节数是否够解析出 assignment
         if (assignmentBuffer.remaining() < 2)
             throw new IllegalStateException("There are insufficient bytes available to read assignment from the sync-group response (" +
                 "actual byte size " + assignmentBuffer.remaining() + ") , this is not expected; " +
                 "it is possible that the leader's assign function is buggy and did not return any assignment for this member, " +
                 "or because static member is configured and the protocol is buggy hence did not get the assignment for this member");
 
+        // 将 assignmentBuffer 解析为 Assignment 对象（分区分配信息）
         Assignment assignment = ConsumerProtocol.deserializeAssignment(assignmentBuffer);
 
         Set<TopicPartition> assignedPartitions = new HashSet<>(assignment.partitions());
 
+        // 检查分配的分区是否和订阅的topic分区匹配
         if (!subscriptions.checkAssignmentMatchedSubscription(assignedPartitions)) {
-            log.warn("We received an assignment {} that doesn't match our current subscription {}; it is likely " +
-                "that the subscription has changed since we joined the group. Will try re-join the group with current subscription",
+            log.warn("We received an assignment {} that do" + getString() + "hanged since we joined the group. Will try re-join the group with current subscription",
                 assignment.partitions(), subscriptions.prettyString());
 
+            // 如果不匹配，则请求重新加入消费者组
             requestRejoin();
 
             return;
@@ -411,26 +423,33 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
                 // If revoked any partitions, need to re-join the group afterwards
                 log.info("Need to revoke partitions {} and re-join the group", revokedPartitions);
+                // 如果撤销了分区则需要重新加入消费者组
                 requestRejoin();
             }
         }
 
         // The leader may have assigned partitions which match our subscription pattern, but which
         // were not explicitly requested, so we update the joined subscription here.
+        // 如果分配的topic分区和订阅的topic的分区匹配，则更新joined subscription 订阅
         maybeUpdateJoinedSubscription(assignedPartitions);
 
         // Catch any exception here to make sure we could complete the user callback.
+        // 更新内部状态并返回第一个发生的异常（如果有的话）
         firstException.compareAndSet(null, invokeOnAssignment(assignor, assignment));
 
         // Reschedule the auto commit starting from now
+        // 重新调度自动提交的定时器
         if (autoCommitEnabled)
             this.nextAutoCommitTimer.updateAndReset(autoCommitIntervalMs);
 
+        // 将分配的分区设置为已分配
         subscriptions.assignFromSubscribed(assignedPartitions);
 
         // Add partitions that were not previously owned but are now assigned
+        // 处理新增的分区
         firstException.compareAndSet(null, invokePartitionsAssigned(addedPartitions));
 
+        // 如果有异常，则抛出去
         if (firstException.get() != null) {
             if (firstException.get() instanceof KafkaException) {
                 throw (KafkaException) firstException.get();
@@ -438,6 +457,11 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 throw new KafkaException("User rebalance callback throws an error", firstException.get());
             }
         }
+    }
+
+    private static String getString() {
+        return "esn't match our current subscription {}; it is likely " +
+                "that the subscription has c";
     }
 
     void maybeUpdateSubscriptionMetadata() {
@@ -460,6 +484,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
      * if they are enabled.
      * <p>
      * Returns early if the timeout expires or if waiting on rejoin is not required
+     * 这里会和组协调器通信，加入消费者组，分配到自己所负责的分区
      *
      * @param timer Timer bounding how long this method can block
      * @param waitForJoinGroup Boolean flag indicating if we should wait until re-join group completes
@@ -467,22 +492,28 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
      * @return true iff the operation succeeded
      */
     public boolean poll(Timer timer, boolean waitForJoinGroup) {
+        // 1、更新订阅的分区元数据
         maybeUpdateSubscriptionMetadata();
 
+        // 2、调用已完成的位移提交回调函数
         invokeCompletedOffsetCommitCallbacks();
 
         if (subscriptions.hasAutoAssignedPartitions()) {
+            // 3、如果用户配置的分区分配策略为空，则抛出异常
             if (protocol == null) {
                 throw new IllegalStateException("User configured " + ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG +
                     " to empty while trying to subscribe for group protocol to auto assign partitions");
             }
             // Always update the heartbeat last poll time so that the heartbeat thread does not leave the
             // group proactively due to application inactivity even if (say) the coordinator cannot be found.
+            // 4、发送心跳请求
             pollHeartbeat(timer.currentTimeMs());
+            // 5、【重要】如果当前还没有找到消费者所对应的组协调器，则调用父类的 ensureCoordinatorReady 方法和组协调器建立连接
             if (coordinatorUnknown() && !ensureCoordinatorReady(timer)) {
                 return false;
             }
 
+            // 需要重新加入消费者组（rebalance）
             if (rejoinNeededOrPending()) {
                 // due to a race condition between the initial metadata fetch and the initial rebalance,
                 // we need to ensure that the metadata is fresh before joining initially. This ensures
@@ -495,6 +526,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     // reduce the number of rebalances caused by single topic creation by asking consumer to
                     // refresh metadata before re-joining the group as long as the refresh backoff time has
                     // passed.
+                    // 处理订阅模式
                     if (this.metadata.timeToAllowUpdate(timer.currentTimeMs()) == 0) {
                         this.metadata.requestUpdate();
                     }
@@ -503,10 +535,12 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                         return false;
                     }
 
+                    // 更新订阅元数据
                     maybeUpdateSubscriptionMetadata();
                 }
 
                 // if not wait for join group, we would just use a timer of 0
+                // 【重要】如果消费者还没有加入消费者组，或者通过心跳检测到消费者组有变化，则需要调用父类的ensureActiveGroup方法等待消费者组分配分区完成
                 if (!ensureActiveGroup(waitForJoinGroup ? timer : time.timer(0L))) {
                     // since we may use a different timer in the callee, we'd still need
                     // to update the original timer's current time after the call
@@ -523,11 +557,13 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             // awaitMetadataUpdate() initiates new connections with configured backoff and avoids the busy loop.
             // When group management is used, metadata wait is already performed for this scenario as
             // coordinator is unknown, hence this check is not required.
+            // 处理手动分配分区
             if (metadata.updateRequested() && !client.hasReadyNodes(timer.currentTimeMs())) {
                 client.awaitMetadataUpdate(timer);
             }
         }
 
+        // 最后无论以上处理是否执行，都调用maybeAutoCommitOffsetsAsync方法检查自动提交是否开启，如果开启则需要提交上一次拉取消费的各个分区的消息
         maybeAutoCommitOffsetsAsync(timer.currentTimeMs());
         return true;
     }
@@ -562,19 +598,27 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     protected Map<String, ByteBuffer> performAssignment(String leaderId,
                                                         String assignmentStrategy,
                                                         List<JoinGroupResponseData.JoinGroupResponseMember> allSubscriptions) {
+        // 找到分区分配策略的分配器（为什么要把分区分配放在消费者端呢？为什么不放在broker端？因为放在消费者端是为了方便各个接入的消费者自己维护）
         ConsumerPartitionAssignor assignor = lookupAssignor(assignmentStrategy);
+        // 未找到分区分配策略，则抛出异常
         if (assignor == null)
             throw new IllegalStateException("Coordinator selected invalid assignment protocol: " + assignmentStrategy);
         String assignorName = assignor.name();
 
+        // 所有订阅的topic
         Set<String> allSubscribedTopics = new HashSet<>();
+        // key是消费者的memberId，value是该消费者的订阅信息
         Map<String, Subscription> subscriptions = new HashMap<>();
 
         // collect all the owned partitions
+        // key 是消费者的memberId，value是该消费者订阅的topic分区
         Map<String, List<TopicPartition>> ownedPartitions = new HashMap<>();
 
+        // 解析组协调器响应JOIN_GROUP请求时返回的所有消费者信息（所有参与入组的消费者）
         for (JoinGroupResponseData.JoinGroupResponseMember memberSubscription : allSubscriptions) {
+            // 订阅的元数据信息（包含了订阅的topic有哪些）
             Subscription subscription = ConsumerProtocol.deserializeSubscription(ByteBuffer.wrap(memberSubscription.metadata()));
+            // 消费者组实例ID
             subscription.setGroupInstanceId(Optional.ofNullable(memberSubscription.groupInstanceId()));
             subscriptions.put(memberSubscription.memberId(), subscription);
             allSubscribedTopics.addAll(subscription.topics());
@@ -585,10 +629,12 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         // which ensures that all metadata changes will eventually be seen
         updateGroupSubscription(allSubscribedTopics);
 
+        // 只有消费者组里的leader才能执行分区分配
         isLeader = true;
 
         log.debug("Performing assignment using strategy {} with subscriptions {}", assignorName, subscriptions);
 
+        // 2、调用分配器的assign方法进行分配分区并获取分配结果
         Map<String, Assignment> assignments = assignor.assign(metadata.fetch(), new GroupSubscription(subscriptions)).groupAssignment();
 
         // skip the validation for built-in cooperative sticky assignor since we've considered
@@ -604,25 +650,33 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         //
         // TODO: this is a hack and not something we want to support long-term unless we push regex into the protocol
         //       we may need to modify the ConsumerPartitionAssignor API to better support this case.
+        // 分配的每一个topic
         Set<String> assignedTopics = new HashSet<>();
+        // 3、通过两次比较，检查是否有订阅的topic未被成功分配，或者是否有未订阅的topic被成功分配，并根据情况更新信息
         for (Assignment assigned : assignments.values()) {
             for (TopicPartition tp : assigned.partitions())
                 assignedTopics.add(tp.topic());
         }
 
+        // 如果 allSubscribedTopics 里有topic不存在于 assignedTopics 集合中，则说明有topic没有被成功分配
         if (!assignedTopics.containsAll(allSubscribedTopics)) {
+            // 找出未被成功分配的topic
             Set<String> notAssignedTopics = new HashSet<>(allSubscribedTopics);
+            // 移除掉
             notAssignedTopics.removeAll(assignedTopics);
             log.warn("The following subscribed topics are not assigned to any members: {} ", notAssignedTopics);
         }
 
+        // 如果 assignedTopics 里有topic不在 allSubscribedTopics 集合中存在，则说明分配了不该分配的topic
         if (!allSubscribedTopics.containsAll(assignedTopics)) {
             Set<String> newlyAddedTopics = new HashSet<>(assignedTopics);
+            // 找出这些不应该分配的topic
             newlyAddedTopics.removeAll(allSubscribedTopics);
             log.info("The following not-subscribed topics are assigned, and their metadata will be " +
                     "fetched from the brokers: {}", newlyAddedTopics);
 
             allSubscribedTopics.addAll(assignedTopics);
+            // 更新订阅信息
             updateGroupSubscription(allSubscribedTopics);
         }
 
@@ -630,6 +684,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
         log.info("Finished assignment for group at generation {}: {}", generation().generationId, assignments);
 
+        // 4、将分配结果序列化为ByteBuffer（key是memberId,value是给该consumer分配的topic分区）
         Map<String, ByteBuffer> groupAssignment = new HashMap<>();
         for (Map.Entry<String, Assignment> assignmentEntry : assignments.entrySet()) {
             ByteBuffer buffer = ConsumerProtocol.serializeAssignment(assignmentEntry.getValue());
@@ -1031,6 +1086,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
     public void maybeAutoCommitOffsetsAsync(long now) {
         if (autoCommitEnabled) {
+            // 更新下次自动提交时间
             nextAutoCommitTimer.update(now);
             if (nextAutoCommitTimer.isExpired()) {
                 nextAutoCommitTimer.reset(autoCommitIntervalMs);

@@ -28,6 +28,7 @@ import org.slf4j.Logger;
  */
 public final class Heartbeat {
     private final int maxPollIntervalMs;
+    // 重平衡相关配置
     private final GroupRebalanceConfig rebalanceConfig;
     private final Time time;
     private final Timer heartbeatTimer;
@@ -35,7 +36,9 @@ public final class Heartbeat {
     private final Timer pollTimer;
     private final Logger log;
 
+    // 最近一次发送的心跳时间戳
     private volatile long lastHeartbeatSend = 0L;
+    // 是否有心跳请求正在发送中
     private volatile boolean heartbeatInFlight = false;
 
     public Heartbeat(GroupRebalanceConfig config,
@@ -54,6 +57,7 @@ public final class Heartbeat {
     }
 
     private void update(long now) {
+        // 将这几个时间都设置为now
         heartbeatTimer.update(now);
         sessionTimer.update(now);
         pollTimer.update(now);
@@ -61,6 +65,7 @@ public final class Heartbeat {
 
     public void poll(long now) {
         update(now);
+        // 重置pollTimer
         pollTimer.reset(maxPollIntervalMs);
     }
 

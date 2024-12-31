@@ -76,10 +76,11 @@ public class KafkaExactlyOnceDemo {
     private static final String OUTPUT_TOPIC = "output-topic";
 
     public static void main(String[] args) throws InterruptedException, ExecutionException {
-        if (args.length != 3) {
-            throw new IllegalArgumentException("Should accept 3 parameters: " +
-                "[number of partitions], [number of instances], [number of records]");
-        }
+//        if (args.length != 3) {
+//            throw new IllegalArgumentException("Should accept 3 parameters: " +
+//                "[number of partitions], [number of instances], [number of records]");
+//        }
+        args = new String[]{"2", "1", "100"};
 
         int numPartitions = Integer.parseInt(args[0]);
         int numInstances = Integer.parseInt(args[1]);
