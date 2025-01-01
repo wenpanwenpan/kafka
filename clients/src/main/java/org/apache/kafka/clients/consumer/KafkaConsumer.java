@@ -1285,8 +1285,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     }
                 }
 
-                // 2、【重要】拉取消息
+                // 2、【重要】拉取消息（如果缓存里有则从缓存里获取，如果本地缓存里没有则发起一次异步拉取请求）
                 final Map<TopicPartition, List<ConsumerRecord<K, V>>> records = pollForFetches(timer);
+                // 获取到了消息
                 if (!records.isEmpty()) {
                     // before returning the fetched records, we can send off the next round of fetches
                     // and avoid block waiting for their responses to enable pipelining while the user
@@ -1294,9 +1295,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     //
                     // NOTE: since the consumed position has already been updated, we must not allow
                     // wakeups or any other errors to be triggered prior to returning the fetched records.
-                    // 发送拉取消息请求数量大于0或者有正在进行中的请求，则
+                    // 发送拉取消息请求数量大于0或者有正在进行中的请求，则说明还有请求在等待发送（不仅仅是拉取请求），顺便发送一下他
                     if (fetcher.sendFetches() > 0 || client.hasPendingRequests()) {
-                        // 发送请求队列里的请求
+                        // 发送请求队列里的请求到nio socket channel 里
                         client.transmitSends();
                     }
 

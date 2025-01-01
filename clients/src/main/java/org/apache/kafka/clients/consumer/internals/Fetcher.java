@@ -301,7 +301,7 @@ public class Fetcher<K, V> implements Closeable {
             // listener because the future may have been fulfilled on another thread (e.g. during a
             // disconnection being handled by the heartbeat thread) which will mean the listener
             // will be invoked synchronously.
-            // 3、设置响应的回调处理，将服务端返回的数据通过add方法缓存到队列中
+            // 3、添加到fetcher正在拉取的节点集合里
             this.nodesWithPendingFetchRequests.add(entry.getKey().id());
             // 4、注册一个监听器到 future 上，当发送成功后就会调用监听器
             future.addListener(new RequestFutureListener<ClientResponse>() {
@@ -389,6 +389,7 @@ public class Fetcher<K, V> implements Closeable {
             });
 
         }
+        // 返回发送拉取消息请求的节点数量
         return fetchRequestMap.size();
     }
 

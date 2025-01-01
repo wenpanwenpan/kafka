@@ -259,6 +259,10 @@ public class ConsumerNetworkClient implements Closeable {
      * @param timer Timer bounding how long this method can block
      * @param pollCondition Nullable blocking condition
      * @param disableWakeup If TRUE disable triggering wake-ups
+     * 1、从unsent里获取到请求队列，然后将请求发送到kafkaChannel里
+     * 2、如果此时NIO socket channel可写，则将数据写入socket的缓冲区中
+     * 3、处理unsent请求队列里的超时请求
+     * 4、处理已经响应完成的回调
      */
     public void poll(Timer timer, PollCondition pollCondition, boolean disableWakeup) {
         // there may be handlers which need to be invoked if we woke up the previous call to poll
@@ -279,6 +283,7 @@ public class ConsumerNetworkClient implements Closeable {
             // condition becomes satisfied after the call to shouldBlock() (because of a fired completion
             // handler), the client will be woken up.
             // 调用poll方法监听底层网络连接，并处理网络数据读写
+            // 如果 pendingCompletion 不为空，则说明有需要处理的回调，此时不能在client上阻塞
             if (pendingCompletion.isEmpty() && (pollCondition == null || pollCondition.shouldBlock())) {
                 // if there are no requests in flight, do not block longer than the retry backoff
                 // poll 操作的阻塞时间
@@ -353,7 +358,7 @@ public class ConsumerNetworkClient implements Closeable {
             // 将所有节点发送队列里的请求发送出去（发送到哪里呢？发送到KafkaChannel的Send属性上，等待NIO channel有可写事件发生时才真正写入）
             trySend(timer.currentTimeMs());
 
-            // 真实发送
+            // 真实发送，如果有可写事件发生，就将KafkaChannel里的send属性写入Socket的buffer里，如果没有则也不阻塞等待
             client.poll(0, timer.currentTimeMs());
         } finally {
             lock.unlock();
@@ -553,7 +558,7 @@ public class ConsumerNetworkClient implements Closeable {
             // 4、遍历队列里的每个请求，预发送
             while (iterator.hasNext()) {
                 ClientRequest request = iterator.next();
-                // 5、调用ready方法确保与目标节点建立了连接
+                // 5、调用ready方法确保与目标节点建立了连接（如果没有建立连接则尝试建立连接）
                 if (client.ready(node, now)) {
                     // 6、调用send方法，完成请求的预发送（即将请求存入KafkaChannel里，等待socket可写时写入socket发送缓冲区）
                     client.send(request, now);

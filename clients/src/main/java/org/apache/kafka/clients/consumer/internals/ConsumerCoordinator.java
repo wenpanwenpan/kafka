@@ -89,6 +89,7 @@ import static org.apache.kafka.clients.consumer.CooperativeStickyAssignor.COOPER
 public final class ConsumerCoordinator extends AbstractCoordinator {
     private final GroupRebalanceConfig rebalanceConfig;
     private final Logger log;
+    // 支持的分区分配策略
     private final List<ConsumerPartitionAssignor> assignors;
     // 消费者元数据
     private final ConsumerMetadata metadata;
@@ -96,6 +97,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     // 该消费者的订阅信息
     private final SubscriptionState subscriptions;
     private final OffsetCommitCallback defaultOffsetCommitCallback;
+    // 是否开启了自动提交
     private final boolean autoCommitEnabled;
     private final int autoCommitIntervalMs;
     private final ConsumerInterceptors<?, ?> interceptors;
