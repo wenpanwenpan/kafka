@@ -54,31 +54,39 @@ import scala.collection._
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
-class GroupMetadataManager(brokerId: Int,
-                           interBrokerProtocolVersion: ApiVersion,
+// 消费者组元数据管理器
+class GroupMetadataManager(brokerId: Int, // 所在broker的ID
+                           interBrokerProtocolVersion: ApiVersion, // 保存broker间通信使用的请求版本。他是broker端参数 inter.broker.protocol.version 值，主要为了确定位移topic的消息格式版本
+                           // 内部位移topic __consumer_offsets 的配置类，包含了与位移管理相关的重要参数，比如：位移topic的日志段大小，副本因子、分区数等
                            config: OffsetConfig,
-                           val replicaManager: ReplicaManager,
+                           val replicaManager: ReplicaManager,// 副本管理器，用来获取分区对象，日志对象，以及写入分区消息等
                            zkClient: KafkaZkClient,
                            time: Time,
                            metrics: Metrics) extends Logging with KafkaMetricsGroup {
 
+  // 压缩类型，主要用于向 __consumer_offsets topic写入消息时执行压缩操作
   private val compressionType: CompressionType = CompressionType.forId(config.offsetsTopicCompressionCodec.codec)
 
+  // 【重要】消费者组元数据容器，内部保存 broker管理的所有消费者组的数据。key是消费者组名称，value是该消费者组的元数据对象。
+  // 通过该字段实现了对消费者组的添加、删除和遍历操作
   private val groupMetadataCache = new Pool[String, GroupMetadata]
 
   /* lock protecting access to loading and owned partition sets */
   private val partitionLock = new ReentrantLock()
 
   /* partitions of consumer groups that are being loaded, its lock should be always called BEFORE the group lock if needed */
+  // __consumer_offsets topic 下正在执行加载操作的分区
   private val loadingPartitions: mutable.Set[Int] = mutable.Set()
 
   /* partitions of consumer groups that are assigned, using the same loading partition lock */
+  // __consumer_offsets topic 下完成加载的分区。所谓的加载就是指读取唯一topic消息数据，填充groupMetadataCache字段的操作
   private val ownedPartitions: mutable.Set[Int] = mutable.Set()
 
   /* shutting down flag */
   private val shuttingDown = new AtomicBoolean(false)
 
   /* number of partitions for the consumer metadata topic */
+  // __consumer_offsets topic 的总分区数，默认是 50个分区
   private val groupMetadataTopicPartitionCount = getGroupMetadataTopicPartitionCount
 
   /* single-thread scheduler to handle offset/group metadata cache loading and unloading */
@@ -171,9 +179,13 @@ class GroupMetadataManager(brokerId: Int,
       }
     })
 
+  // 启动时执行必要的初始化操作，包括获取topic分区和启动元数据过期功能
   def startup(enableMetadataExpiration: Boolean): Unit = {
+    // 启动调度器
     scheduler.startup()
+      // 如果开启了元数据过期功能
     if (enableMetadataExpiration) {
+      // 定期调度 cleanupGroupMetadata 方法清理过期的组元数据
       scheduler.schedule(name = "delete-expired-group-metadata",
         fun = () => cleanupGroupMetadata(),
         period = config.offsetsRetentionCheckIntervalMs,
@@ -187,6 +199,7 @@ class GroupMetadataManager(brokerId: Int,
 
   def isPartitionLoading(partition: Int) = inLock(partitionLock) { loadingPartitions.contains(partition) }
 
+  // 计算某个消费者组的组协调器在哪个broker上
   def partitionFor(groupId: String): Int = Utils.abs(groupId.hashCode) % groupMetadataTopicPartitionCount
 
   def isGroupLocal(groupId: String): Boolean = isPartitionOwned(partitionFor(groupId))
@@ -212,6 +225,7 @@ class GroupMetadataManager(brokerId: Int,
 
   /**
    * Get the group associated with the given groupId or null if not found
+   * 获取对应消费者组的元数据
    */
   def getGroup(groupId: String): Option[GroupMetadata] = {
     Option(groupMetadataCache.get(groupId))
@@ -222,14 +236,16 @@ class GroupMetadataManager(brokerId: Int,
    * is true - or null if not found
    */
   def getOrMaybeCreateGroup(groupId: String, createIfNotExist: Boolean): Option[GroupMetadata] = {
-    if (createIfNotExist)
+    if (createIfNotExist) {
+      // 如果消费者组不存在，则创建一个（此时消费者组的状态是empty）
       Option(groupMetadataCache.getAndMaybePut(groupId, new GroupMetadata(groupId, Empty, time)))
-    else
+    } else
       Option(groupMetadataCache.get(groupId))
   }
 
   /**
    * Add a group or get the group associated with the given groupId if it already exists
+   * 添加消费者组元数据
    */
   def addGroup(group: GroupMetadata): GroupMetadata = {
     val currentGroup = groupMetadataCache.putIfNotExists(group.groupId, group)
@@ -730,13 +746,16 @@ class GroupMetadataManager(brokerId: Int,
     }
   }
 
+  // 加载消费者组元数据
   private def loadGroup(group: GroupMetadata, offsets: Map[TopicPartition, CommitRecordMetadataAndOffset],
                         pendingTransactionalOffsets: Map[Long, mutable.Map[TopicPartition, CommitRecordMetadataAndOffset]]): Unit = {
     // offsets are initialized prior to loading the group into the cache to ensure that clients see a consistent
     // view of the group's offsets
     trace(s"Initialized offsets $offsets for group ${group.groupId}")
+    // 初始化消费者组的位移信息，将位移值添加到offsets字段标识的消费者组提交位移元数据中，实现加载消费者组订阅分区提交位移的目的
     group.initializeOffsets(offsets, pendingTransactionalOffsets.toMap)
 
+    // 添加一个消费者组到元数据管理器中
     val currentGroup = addGroup(group)
     if (group != currentGroup)
       debug(s"Attempt to load group ${group.groupId} from log with generation ${group.generationId} failed " +

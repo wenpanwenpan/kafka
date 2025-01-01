@@ -38,9 +38,15 @@ public class GroupRebalanceConfig {
     }
 
     public final int sessionTimeoutMs;
+    // 重平衡超时时间（max.poll.interval.ms配置，默认5分钟），如果消费者两次poll请求时间间隔超过了该值，则认为消费能力不足
+    // 将此消费者commit标记为失败，并将此消费者从消费者组中移除，并触发rebalance，将该消费者负责的分区分配给其他消费者
     public final int rebalanceTimeoutMs;
+    // 心跳间隔时间
     public final int heartbeatIntervalMs;
+    // 消费者组ID
     public final String groupId;
+    // 消费者实例ID（由group.instance.id配置），默认为空字符串，如果设置了，则消费者被认为是静态成员，会分配较大的session超时时间，
+    // 避免因成员临时不可用（比如重启）而触发rebalance，如果不设置，则消费者被认为是动态成员
     public final Optional<String> groupInstanceId;
     public final long retryBackoffMs;
     public final boolean leaveGroupOnClose;

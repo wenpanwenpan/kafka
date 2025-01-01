@@ -129,7 +129,7 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
 
   /**
    * Top-level method that handles all requests and multiplexes to the right api
-   * 【重点方法】
+   * 【重点方法】非常重要，broker端处理请求的入口都在这里
    */
   override def handle(request: RequestChannel.Request): Unit = {
     try {
@@ -165,7 +165,7 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
         case ApiKeys.HEARTBEAT => handleHeartbeatRequest(request)
         // 让消费者离开指定的消费者组
         case ApiKeys.LEAVE_GROUP => handleLeaveGroupRequest(request)
-        // 同步消费者组的状态
+        // 同步消费者组的状态（由消费者发起，向组协调器获取分配分区）
         case ApiKeys.SYNC_GROUP => handleSyncGroupRequest(request)
         // 获取消费者组的描述信息
         case ApiKeys.DESCRIBE_GROUPS => handleDescribeGroupRequest(request)
@@ -1574,10 +1574,12 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
     }
   }
 
+  // 处理消费者请求加入消费者组请求
   def handleJoinGroupRequest(request: RequestChannel.Request): Unit = {
+    // 取出发送过来的请求
     val joinGroupRequest = request.body[JoinGroupRequest]
 
-    // the callback for sending a join-group response
+    // the callback for sending a join-group response 构建join_group的响应
     def sendResponseCallback(joinResult: JoinGroupResult): Unit = {
       def createResponse(requestThrottleMs: Int): AbstractResponse = {
         val protocolName = if (request.context.apiVersion() >= 7)
@@ -1622,6 +1624,7 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
       val protocols = joinGroupRequest.data.protocols.valuesList.asScala.map(protocol =>
         (protocol.name, protocol.metadata)).toList
 
+      // 【重要】调用组协调器来处理入组请求
       groupCoordinator.handleJoinGroup(
         joinGroupRequest.data.groupId,
         joinGroupRequest.data.memberId,
@@ -1668,6 +1671,7 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
         assignmentMap += (assignment.memberId -> assignment.assignment)
       }
 
+      // 【重要】调用组协调器来处理分区分配请求
       groupCoordinator.handleSyncGroup(
         syncGroupRequest.data.groupId,
         syncGroupRequest.data.generationId,

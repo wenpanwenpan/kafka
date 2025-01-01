@@ -582,7 +582,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     private final Deserializer<K> keyDeserializer;
     // value 反序列化器
     private final Deserializer<V> valueDeserializer;
-    // 消息获取器
+    // 消息获取器，通过该fetcher去broker拉取消息的
     private final Fetcher<K, V> fetcher;
     // 消费者拦截器
     private final ConsumerInterceptors<K, V> interceptors;
@@ -590,7 +590,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     private final Time time;
     // 消费者网络客户端，负责消费者和broker的通信
     private final ConsumerNetworkClient client;
-    // 订阅状态
+    // 订阅信息（包含了该消费者订阅了哪些topic以及分区，以及每个分区的消费状态）
     private final SubscriptionState subscriptions;
     // 消费者元数据
     private final ConsumerMetadata metadata;
@@ -1277,7 +1277,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
                 if (includeMetadataInTimeout) {
                     // try to update assignment metadata BUT do not need to block on the timer for join group
-                    // 1、【重要】进入消费者组的初始化流程，并进行消费者分区分配
+                    // 1、【重要】进入消费者组的初始化流程，并进行消费者分区分配（和组协调器通信的几大请求就是在这里进行的）
                     updateAssignmentMetadataIfNeeded(timer, false);
                 } else {
                     while (!updateAssignmentMetadataIfNeeded(time.timer(Long.MAX_VALUE), true)) {

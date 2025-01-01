@@ -93,6 +93,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     // 消费者元数据
     private final ConsumerMetadata metadata;
     private final ConsumerCoordinatorMetrics sensors;
+    // 该消费者的订阅信息
     private final SubscriptionState subscriptions;
     private final OffsetCommitCallback defaultOffsetCommitCallback;
     private final boolean autoCommitEnabled;

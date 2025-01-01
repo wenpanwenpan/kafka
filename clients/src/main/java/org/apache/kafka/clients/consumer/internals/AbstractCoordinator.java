@@ -250,6 +250,7 @@ public abstract class AbstractCoordinator implements Closeable {
      * @return true If coordinator discovery and initial connection succeeded, false otherwise
      */
     protected synchronized boolean ensureCoordinatorReady(final Timer timer) {
+        // 如果组协调器已知，则直接返回true
         if (!coordinatorUnknown())
             return true;
 
@@ -264,7 +265,7 @@ public abstract class AbstractCoordinator implements Closeable {
             // 将unsent里的所有请求队列里的请求发送出去（这里会循环的在future上等待发送的lookupCoordinator请求响应或超时）
             client.poll(future, timer);
 
-            // 如果还没有收到响应，则跳出循环
+            // 如果还没有收到响应(说明请求超时)，则跳出循环
             if (!future.isDone()) {
                 // ran out of time
                 break;
@@ -302,6 +303,7 @@ public abstract class AbstractCoordinator implements Closeable {
     }
 
     protected synchronized RequestFuture<Void> lookupCoordinator() {
+        // findCoordinatorFuture == null 说明该消费者没有正在进行中的查找组协调器请求
         if (findCoordinatorFuture == null) {
             // find a node to ask about the coordinator
             // 选择一个负载最小的broker
@@ -310,7 +312,7 @@ public abstract class AbstractCoordinator implements Closeable {
                 log.debug("No broker available to send FindCoordinator request");
                 return RequestFuture.noBrokersAvailable();
             } else {
-                // 给该node发送一个查找组协调器的请求
+                // 给该node发送一个查找组协调器的请求 find_coordinator
                 findCoordinatorFuture = sendFindCoordinatorRequest(node);
             }
         }
@@ -354,7 +356,7 @@ public abstract class AbstractCoordinator implements Closeable {
                 throw cause;
             }
             // Awake the heartbeat thread if needed
-            // 如果应该发起心跳了，则唤醒
+            // 如果应该发起心跳了，则唤醒心跳线程
             if (heartbeat.shouldHeartbeat(now)) {
                 notify();
             }
@@ -392,11 +394,13 @@ public abstract class AbstractCoordinator implements Closeable {
         // always ensure that the coordinator is ready because we may have been disconnected
         // when sending heartbeats and does not necessarily require us to rejoin the group.
         // 1、再次检查下是否有找到该消费者组对应的组协调器，如果没有，则继续发出查找组协调器请求，如果还是找不到，则返回false
+        // 这里会发送 find_coordinator请求，并阻塞等待请求响应
         if (!ensureCoordinatorReady(timer)) {
             return false;
         }
 
-        // 2、如果找到了组协调器，则开启心跳线程（这里还不会立即发起心跳，只是启动了线程）
+        // 2、如果找到了组协调器，则开启心跳线程（这里还不会立即发起心跳，只是启动了线程，具体开启的时机是join_group请求响应后），
+        // 每隔3s发送心跳请求给组协调器所在的broker
         startHeartbeatThreadIfNeeded();
         // 3、进入消费者加入消费者组的流程（即发送JOIN_GROUP、SYNC_GROUP请求）
         return joinGroupIfNeeded(timer);
@@ -494,7 +498,7 @@ public abstract class AbstractCoordinator implements Closeable {
                     // Duplicate the buffer in case `onJoinComplete` does not complete and needs to be retried.
                     ByteBuffer memberAssignment = future.value().duplicate();
 
-                    // 3、【重要】如果加入消费者组的异步请求成功完成，则协调者会将当前消费者负责的分区发送过来，
+                    // 3、【重要】如果加入消费者组的异步请求成功完成（sync_group），则协调者会将当前消费者负责的分区发送过来，
                     // 消费者调用onJoinComplete方法来处理加入消费者组后的逻辑
                     onJoinComplete(generationSnapshot.generationId, generationSnapshot.memberId, generationSnapshot.protocolName, memberAssignment);
 
@@ -554,7 +558,7 @@ public abstract class AbstractCoordinator implements Closeable {
         // we store the join future in case we are woken up by the user after beginning the
         // rebalance in the call to poll below. This ensures that we do not mistakenly attempt
         // to rejoin before the pending rebalance has completed.
-        // 1、joinFuture == null 说明还没有发起过JOIN_GROUP请求
+        // 1、joinFuture == null 说明没有正在进行中的JOIN_GROUP请求
         if (joinFuture == null) {
             // 将消费者协调器状态流转为PREPARING_REBALANCE（准备重平衡）
             state = MemberState.PREPARING_REBALANCE;
@@ -627,7 +631,7 @@ public abstract class AbstractCoordinator implements Closeable {
             rebalanceConfig.rebalanceTimeoutMs + JOIN_GROUP_TIMEOUT_LAPSE);
         // 发送JoinGroup请求（添加到unsent队列中）
         return client.send(coordinator, requestBuilder, joinGroupTimeoutMs)
-                // 注册请求回调
+                // 【重要】注册请求回调（会在该回调中发起SYNC_GROUP请求）
                 .compose(new JoinGroupResponseHandler(generation));
     }
 
@@ -673,7 +677,7 @@ public abstract class AbstractCoordinator implements Closeable {
                             log.info("Successfully joined group with generation {}", AbstractCoordinator.this.generation);
 
                             // 可以看到不论该consumer是否被选为了leader，都会向组协调器发起SYNC_GROUP请求，请求获取自己所负责的分区信息
-                            // 如果该消费者协调器被选为了消费者组的leader
+                            // 如果该消费者协调器被选为了消费者组的leader，那么该consumer还会负责分区分配操作
                             if (joinResponse.isLeader()) {
                                 // 【重要】消费者组的leader会负责分区分配操作
                                 onJoinLeader(joinResponse).chain(future);
@@ -923,7 +927,7 @@ public abstract class AbstractCoordinator implements Closeable {
                         new FindCoordinatorRequestData()
                             .setKeyType(CoordinatorType.GROUP.id())
                             .setKey(this.rebalanceConfig.groupId));
-        // 发送请求
+        // 发送请求（其实是将请求放入client里的unsent发送队列里）
         return client.send(node, requestBuilder)
                 // 注册请求回调
                 .compose(new FindCoordinatorResponseHandler());
@@ -1496,7 +1500,7 @@ public abstract class AbstractCoordinator implements Closeable {
                             return;
 
                         if (!enabled) {
-                            // 如果没有开启心跳，则在这里等待
+                            // 如果没有开启心跳，则在这里等待，等待notify方法来唤醒
                             AbstractCoordinator.this.wait();
                             continue;
                         }
@@ -1616,7 +1620,7 @@ public abstract class AbstractCoordinator implements Closeable {
                 null);
 
         public final int generationId;
-        // 在消费者组中对应的成员ID
+        // 在消费者组中对应的成员ID，自动生成
         public final String memberId;
         public final String protocolName;
 

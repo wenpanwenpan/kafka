@@ -230,7 +230,7 @@ public class ConsumerNetworkClient implements Closeable {
     public boolean poll(RequestFuture<?> future, Timer timer) {
         do {
             poll(timer, future);
-            // 只要请求没有响应并且没有超时就一直循环
+            // 【重要】只要请求没有响应并且没有超时就一直循环
         } while (!future.isDone() && timer.notExpired());
         return future.isDone();
     }
@@ -555,7 +555,7 @@ public class ConsumerNetworkClient implements Closeable {
                 ClientRequest request = iterator.next();
                 // 5、调用ready方法确保与目标节点建立了连接
                 if (client.ready(node, now)) {
-                    // 6、调用send方法，完成请求的预发送（即将请求存入channel里，等待socket可写时写入socket发送缓冲区）
+                    // 6、调用send方法，完成请求的预发送（即将请求存入KafkaChannel里，等待socket可写时写入socket发送缓冲区）
                     client.send(request, now);
                     // 7、从发送队列里删除，避免重复发送
                     iterator.remove();
