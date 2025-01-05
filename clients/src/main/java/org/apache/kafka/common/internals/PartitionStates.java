@@ -44,6 +44,7 @@ import java.util.function.BiConsumer;
  */
 public class PartitionStates<S> {
 
+    // 核心集合
     private final LinkedHashMap<TopicPartition, S> map = new LinkedHashMap<>();
     private final Set<TopicPartition> partitionSetView = Collections.unmodifiableSet(map.keySet());
 

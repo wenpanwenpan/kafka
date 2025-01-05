@@ -70,6 +70,7 @@ public class Timer {
      * @return true if the timer has expired, false otherwise
      */
     public boolean isExpired() {
+        // 当前时间大于截止时间则认为是过期了
         return currentTimeMs >= deadlineMs;
     }
 

@@ -710,7 +710,9 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
   def handleFetchRequest(request: RequestChannel.Request): Unit = {
     val versionId = request.header.apiVersion
     val clientId = request.header.clientId
+    // 请求体
     val fetchRequest = request.body[FetchRequest]
+    // 构建拉取上下文
     val fetchContext = fetchManager.newContext(
       fetchRequest.metadata,
       fetchRequest.fetchData,
@@ -958,10 +960,10 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
       // call the replica manager to fetch messages from the local replica
       // 【重要】读取消息
       replicaManager.fetchMessages(
-        fetchRequest.maxWait.toLong,
+        fetchRequest.maxWait.toLong, // 最大等待时间
         fetchRequest.replicaId,
-        fetchMinBytes,
-        fetchMaxBytes,
+        fetchMinBytes, // 最小读取多少字节
+        fetchMaxBytes, // 最大读取多少字节
         versionId <= 2,
         interesting,
         replicationQuota(fetchRequest),
@@ -1641,8 +1643,10 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
   }
 
   def handleSyncGroupRequest(request: RequestChannel.Request): Unit = {
+    // 获取请求数据
     val syncGroupRequest = request.body[SyncGroupRequest]
 
+    // 定义响应回调
     def sendResponseCallback(syncGroupResult: SyncGroupResult): Unit = {
       sendResponseMaybeThrottle(request, requestThrottleMs =>
         new SyncGroupResponse(
@@ -1655,17 +1659,21 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
         ))
     }
 
+    // broker版本低于2.3，且请求里包含了groupInstanceId，则响应错误
     if (syncGroupRequest.data.groupInstanceId != null && config.interBrokerProtocolVersion < KAFKA_2_3_IV0) {
       // Only enable static membership when IBP >= 2.3, because it is not safe for the broker to use the static member logic
       // until we are sure that all brokers support it. If static group being loaded by an older coordinator, it will discard
       // the group.instance.id field, so static members could accidentally become "dynamic", which leads to wrong states.
       sendResponseCallback(SyncGroupResult(Errors.UNSUPPORTED_VERSION))
+      // 请求里缺少协议类型或协议名称，则响应错误
     } else if (!syncGroupRequest.areMandatoryProtocolTypeAndNamePresent()) {
       // Starting from version 5, ProtocolType and ProtocolName fields are mandatory.
       sendResponseCallback(SyncGroupResult(Errors.INCONSISTENT_GROUP_PROTOCOL))
+      // 消费者未授权 syncGroupRequest 操作，则响应错误
     } else if (!authorize(request.context, READ, GROUP, syncGroupRequest.data.groupId)) {
       sendResponseCallback(SyncGroupResult(Errors.GROUP_AUTHORIZATION_FAILED))
     } else {
+      // 获取分配结果
       val assignmentMap = immutable.Map.newBuilder[String, Array[Byte]]
       syncGroupRequest.data.assignments.forEach { assignment =>
         assignmentMap += (assignment.memberId -> assignment.assignment)

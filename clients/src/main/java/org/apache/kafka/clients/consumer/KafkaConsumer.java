@@ -747,6 +747,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             }
             // 11、位移的重置策略
             OffsetResetStrategy offsetResetStrategy = OffsetResetStrategy.valueOf(config.getString(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG).toUpperCase(Locale.ROOT));
+            // 消费者订阅信息管理
             this.subscriptions = new SubscriptionState(logContext, offsetResetStrategy);
             // 集群资源监听器
             ClusterResourceListeners clusterResourceListeners = configureClusterResourceListeners(keyDeserializer,
@@ -1042,6 +1043,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     @Override
     public void subscribe(Collection<String> topics) {
+        // 订阅topic
         subscribe(topics, new NoOpConsumerRebalanceListener());
     }
 
@@ -1365,6 +1367,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             // 如果有分区拉取到了消息（放到本地缓存），就不应该让拉取线程阻塞
             return !fetcher.hasAvailableFetches();
         });
+        // 更新计时器的当前时间
         timer.update(pollTimer.currentTimeMs());
 
         // 4、再次尝试从缓存中获取消息
@@ -1455,10 +1458,12 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     @Override
     public void commitSync(Duration timeout) {
+        // 确保只有一个线程能访问kafkaConsumer
         acquireAndEnsureOpen();
         try {
+            // 要求一定要存在groupId
             maybeThrowInvalidGroupIdException();
-            // 提交该consumer订阅的每一个topic partition的偏移量
+            // 【重要】提交该consumer订阅的每一个topic partition的偏移量。subscriptions.allConsumed() 表示获取所有可以提交偏移量的partition
             if (!coordinator.commitOffsetsSync(subscriptions.allConsumed(), time.timer(timeout))) {
                 throw new TimeoutException("Timeout of " + timeout.toMillis() + "ms expired before successfully " +
                         "committing the current consumed offsets");
@@ -1565,6 +1570,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         try {
             maybeThrowInvalidGroupIdException();
             offsets.forEach(this::updateLastSeenEpochIfNewer);
+            // 同步提交偏移量
             if (!coordinator.commitOffsetsSync(new HashMap<>(offsets), time.timer(timeout))) {
                 throw new TimeoutException("Timeout of " + timeout.toMillis() + "ms expired before successfully " +
                         "committing offsets " + offsets);
@@ -2504,6 +2510,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * @throws IllegalStateException If the consumer has been closed
      */
     private void acquireAndEnsureOpen() {
+        // kafkaConsumer只能被一个线程来消费，多线程调用kafkaConsumer的方法是不被允许的
         acquire();
         if (this.closed) {
             release();

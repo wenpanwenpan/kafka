@@ -139,6 +139,9 @@ public class ConsumerNetworkClient implements Closeable {
         // 1、创建一个请求的回调对象，用于处理请求的结果
         RequestFutureCompletionHandler completionHandler = new RequestFutureCompletionHandler();
         // 2、构造请求对象，调用Client#newClientRequest方法创建一个ClientRequest对象
+        // 【重要】在收到响应时会调用 completionHandler的onComplete方法进行回调，在该方法里会将completionHandler
+        // 自身放入到ConsumerNetworkClient里的pendingCompletion队列里，等待后续统一回调
+        // @see org.apache.kafka.clients.NetworkClient.poll 里的handleCompletedSends、handleCompletedReceives、completeResponses方法
         ClientRequest clientRequest = client.newClientRequest(node.idString(), requestBuilder, now, true,
                 requestTimeoutMs, completionHandler);
         // 3、将请求放入到该node对应的请求队列里
@@ -330,6 +333,7 @@ public class ConsumerNetworkClient implements Closeable {
 
         // called without the lock to avoid deadlock potential if handlers need to acquire locks
         // 8、调用 firePendingCompletedRequests 方法回调上层请求的注册的发送完成回调处理器
+        // 可以看到kafka消费者端通过ConsumerNetworkClient来管理通信，将响应完成的回调都统一放到 pendingCompletion 队列里，在合适的时机统一调用
         firePendingCompletedRequests();
 
         metadata.maybeThrowAnyException();

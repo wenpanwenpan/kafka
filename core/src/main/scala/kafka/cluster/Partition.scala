@@ -1113,6 +1113,7 @@ class Partition(val topicPartition: TopicPartition, // topic分区对象（topic
                   maxBytes: Int, // 获取最大字节数
                   fetchIsolation: FetchIsolation, // 获取的消息隔离级别（读取未提交消息或全量消息）
                   fetchOnlyFromLeader: Boolean, // 是否只从leader节点读取消息
+                 // 是否至少读取条消息
                   minOneMessage: Boolean): LogReadInfo = inReadLock(leaderIsrUpdateLock) {
     // decide whether to only fetch from leader
     val localLog = localLogWithEpochOrException(currentLeaderEpoch, fetchOnlyFromLeader)

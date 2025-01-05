@@ -160,24 +160,25 @@ class GroupCoordinator(val brokerId: Int,
     }
   }
 
-  def handleJoinGroup(groupId: String,
-                      memberId: String,
-                      groupInstanceId: Option[String],
-                      requireKnownMemberId: Boolean,
-                      clientId: String,
-                      clientHost: String,
-                      rebalanceTimeoutMs: Int,
-                      sessionTimeoutMs: Int,
-                      protocolType: String,
-                      protocols: List[(String, Array[Byte])],
+  def handleJoinGroup(groupId: String, // 消费者组ID
+                      memberId: String, // 消费者成员ID
+                      groupInstanceId: Option[String], // 静态成员ID
+                      requireKnownMemberId: Boolean, // 是否要求成员ID不为空
+                      clientId: String, // 客户端ID（client.id值），组协调器用它来生成memberID
+                      clientHost: String, // 消费者主机名称
+                      rebalanceTimeoutMs: Int, // 重新平衡超时时间（配置：max.poll.interval.ms），如果在这个时间段内消费者组成员没有完成加入组的操作，就会被禁止入组
+                      sessionTimeoutMs: Int, // 会话超时时间（配置：session.timeout.ms），如果在这个时间内组协调器没有收到该成员发送的心跳，则该成员会被踢出组，从而触发Rebalance
+                      protocolType: String, // 协议类型
+                      protocols: List[(String, Array[Byte])], // 按照分配策略分组的订阅分区
+                     // 完成入组之后的回调方法
                       responseCallback: JoinCallback): Unit = {
-    // 验证消费者组状态的合法性
+    // 1、验证消费者组状态的合法性
     validateGroupStatus(groupId, ApiKeys.JOIN_GROUP).foreach { error =>
       responseCallback(JoinGroupResult(memberId, error))
       return
     }
 
-    // 确保 sessionTimeoutMs 值在 groupMinSessionTimeoutMs 和 groupMaxSessionTimeoutMs 之间，否则抛出异常
+    // 2、确保 sessionTimeoutMs 值在 groupMinSessionTimeoutMs 和 groupMaxSessionTimeoutMs 之间，否则抛出异常
     if (sessionTimeoutMs < groupConfig.groupMinSessionTimeoutMs ||
       sessionTimeoutMs > groupConfig.groupMaxSessionTimeoutMs) {
       responseCallback(JoinGroupResult(memberId, Errors.INVALID_SESSION_TIMEOUT))
@@ -186,22 +187,23 @@ class GroupCoordinator(val brokerId: Int,
       val isUnknownMember = memberId == JoinGroupRequest.UNKNOWN_MEMBER_ID
       // group is created if it does not exist and the member id is UNKNOWN. if member
       // is specified but group does not exist, request is rejected with UNKNOWN_MEMBER_ID
-      // 获取消费者组信息，如果组不存在，则创建一个新组
+      // 3、获取消费者组信息，如果组不存在，则创建一个新组
       groupManager.getOrMaybeCreateGroup(groupId, isUnknownMember) match {
         case None =>
           responseCallback(JoinGroupResult(memberId, Errors.UNKNOWN_MEMBER_ID))
         case Some(group) =>
           group.inLock {
+            // 3.1、消费者组已满员
             if (!acceptJoiningMember(group, memberId)) {
               // 如果拒绝接纳该消费者加入组，则移除该消费者，并返回错误码 GROUP_MAX_SIZE_REACHED
               group.remove(memberId)
               group.removeStaticMember(groupInstanceId)
               responseCallback(JoinGroupResult(JoinGroupRequest.UNKNOWN_MEMBER_ID, Errors.GROUP_MAX_SIZE_REACHED))
             } else if (isUnknownMember) {
-              // 消费者成员ID为空的消费者入组处理
+              // 3.2、消费者成员ID为空的消费者入组处理
               doUnknownJoinGroup(group, groupInstanceId, requireKnownMemberId, clientId, clientHost, rebalanceTimeoutMs, sessionTimeoutMs, protocolType, protocols, responseCallback)
             } else {
-              // 消费者成员ID非空的消费者入组处理
+              // 3.3、消费者成员ID非空的消费者入组处理
               doJoinGroup(group, memberId, groupInstanceId, clientId, clientHost, rebalanceTimeoutMs, sessionTimeoutMs, protocolType, protocols, responseCallback)
             }
 

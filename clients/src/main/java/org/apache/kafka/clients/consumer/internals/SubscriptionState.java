@@ -73,33 +73,39 @@ public class SubscriptionState {
     private final Logger log;
 
     private enum SubscriptionType {
-        NONE, AUTO_TOPICS, AUTO_PATTERN, USER_ASSIGNED
+        NONE, // 初始值
+        AUTO_TOPICS, // 按指定的topic进行订阅，自动分配分区
+        AUTO_PATTERN, // 按指定的正则表达式进行订阅，自动分配分区
+        USER_ASSIGNED // 用户自己指定要消费的topic和分区
     }
 
-    /* the type of subscription */
+    /* the type of subscription 订阅类型 */
     private SubscriptionType subscriptionType;
 
-    /* the pattern user has requested，订阅模式 */
+    /* the pattern user has requested，订阅模式，用于过滤topic的正则表达式 */
     private Pattern subscribedPattern;
 
     /* the list of topics the user has requested */
-    // 消费者订阅的topic集合
+    // 用户指定的消费者订阅的topic集合
     private Set<String> subscription;
 
     /* The list of topics the group has subscribed to. This may include some topics which are not part
      * of `subscription` for the leader of a group since it is responsible for detecting metadata changes
-     * which require a group rebalance. */
+     * which require a group rebalance. 消费者组所订阅的所有topic集合 */
     private Set<String> groupSubscription;
 
     /* the partitions that are currently assigned, note that the order of partition matters (see FetchBuilder for more details) */
-    // topic 分区状态，管理该分区拉取相关信息
+    // topic 分区状态，管理该分区拉取相关信息（底层是一个map结构，key是topic分区，value是该分区对应的偏移量信息管理对象TopicPartitionState）
     private final PartitionStates<TopicPartitionState> assignment;
 
     /* Default offset reset strategy */
+    // 默认重置策略，所谓的重置策略就是指当消费者重启的时候，会使用什么策略进行消费，一共有两种策略
+    // 1、latest 策略，就是从最新的offset开始消费
+    // 2、earliest 策略，就是从最早的offset开始消费
     private final OffsetResetStrategy defaultResetStrategy;
 
     /* User-provided listener to be invoked when assignment changes */
-    // 消费者重平衡监听器
+    // 消费者重平衡监听器，用来监听Rebalance后消费者要消费的分区变化
     private ConsumerRebalanceListener rebalanceListener;
 
     private int assignmentId = 0;
@@ -133,10 +139,14 @@ public class SubscriptionState {
     public SubscriptionState(LogContext logContext, OffsetResetStrategy defaultResetStrategy) {
         this.log = logContext.logger(this.getClass());
         this.defaultResetStrategy = defaultResetStrategy;
+        // 用户指定的消费者订阅的topic集合
         this.subscription = new HashSet<>();
+        // 该消费者分配到的分区信息管理，内部是一个map结构，key是topic分区，value是该分区对应的偏移量信息管理对象TopicPartitionState
         this.assignment = new PartitionStates<>();
         this.groupSubscription = new HashSet<>();
+        // 订阅模式，用于正则表达式订阅topic
         this.subscribedPattern = null;
+        // 设置订阅模式为 NONE
         this.subscriptionType = SubscriptionType.NONE;
     }
 
@@ -443,11 +453,14 @@ public class SubscriptionState {
         return result;
     }
 
+    // 如果是指定的topic进行订阅并且自动分配分区 或者 是基于通配符进行订阅并自动分配分区的订阅模式 都返回true
     public synchronized boolean hasAutoAssignedPartitions() {
         return this.subscriptionType == SubscriptionType.AUTO_TOPICS || this.subscriptionType == SubscriptionType.AUTO_PATTERN;
     }
 
+    // 重新设置某个分区的拉取位置信息
     public synchronized void position(TopicPartition tp, FetchPosition position) {
+        // 获取该分区对应的状态相关信息，并更新位置
         assignedState(tp).position(position);
     }
 
@@ -614,7 +627,9 @@ public class SubscriptionState {
         Map<TopicPartition, OffsetAndMetadata> allConsumed = new HashMap<>();
         // 遍历订阅的每个分区
         assignment.forEach((topicPartition, partitionState) -> {
+            // 【重要】只有 fetchState == FETCHING 状态时这里才会返回true
             if (partitionState.hasValidPosition())
+                // 这里提交的偏移量是 partitionState.position.offset ，当消费者从本地缓存拉取走消息记录后就会更新该值
                 allConsumed.put(topicPartition, new OffsetAndMetadata(partitionState.position.offset,
                         partitionState.position.offsetEpoch, ""));
         });
@@ -752,13 +767,14 @@ public class SubscriptionState {
 
         // 该分区的拉取状态
         private FetchState fetchState;
-        // 该分区拉取到什么位置了
+        // 该分区最新消费位置
         private FetchPosition position; // last consumed position
 
         // 分区高水位
         private Long highWatermark; // the high watermark from last fetch
         // 日志起始位移
         private Long logStartOffset; // the log start offset
+        // 分区稳定可读的偏移量
         private Long lastStableOffset;
         // 是否暂停拉取
         private boolean paused;  // whether this partition has been paused by the user
@@ -781,11 +797,16 @@ public class SubscriptionState {
             this.preferredReadReplica = null;
         }
 
+        // 流转状态
         private void transitionState(FetchState newState, Runnable runIfTransitioned) {
+            // 在fetchState 状态下 newState 是否可以流转
             FetchState nextState = this.fetchState.transitionTo(newState);
+            // 如果相等，则说明可以流转
             if (nextState.equals(newState)) {
+                // 流转状态
                 this.fetchState = nextState;
                 runIfTransitioned.run();
+                // 执行完 run(); 方法后check一下，因为run方法里可能会改变position的值
                 if (this.position == null && nextState.requiresPosition()) {
                     throw new IllegalStateException("Transitioned subscription state to " + nextState + ", but position is null");
                 } else if (!nextState.requiresPosition()) {
@@ -857,6 +878,7 @@ public class SubscriptionState {
          */
         private void updatePositionLeaderNoValidation(Metadata.LeaderAndEpoch currentLeaderAndEpoch) {
             if (position != null) {
+                // 流转状态为FETCHING
                 transitionState(FetchStates.FETCHING, () -> {
                     this.position = new FetchPosition(position.offset, position.offsetEpoch, currentLeaderAndEpoch);
                     this.nextRetryTimeMs = null;
@@ -867,12 +889,14 @@ public class SubscriptionState {
         private void validatePosition(FetchPosition position) {
             if (position.offsetEpoch.isPresent() && position.currentLeader.epoch.isPresent()) {
                 transitionState(FetchStates.AWAIT_VALIDATION, () -> {
+                    // 将 position 流转为传入的 position
                     this.position = position;
                     this.nextRetryTimeMs = null;
                 });
             } else {
                 // If we have no epoch information for the current position, then we can skip validation
                 transitionState(FetchStates.FETCHING, () -> {
+                    // 将 position 流转为传入的 position
                     this.position = position;
                     this.nextRetryTimeMs = null;
                 });
@@ -981,6 +1005,8 @@ public class SubscriptionState {
      * the behavior of the current fetch state. Actual state variables are stored in the {@link TopicPartitionState}.
      */
     interface FetchState {
+
+        // 状态流转，其实并不会真正的流转状态，而是看看 validTransitions 是否包含了 newState 状态，如果包含，则认为可以流转
         default FetchState transitionTo(FetchState newState) {
             if (validTransitions().contains(newState)) {
                 return newState;
@@ -1010,6 +1036,7 @@ public class SubscriptionState {
      * {@link FetchState#validTransitions}.
      */
     enum FetchStates implements FetchState {
+        // 初始化状态
         INITIALIZING() {
             @Override
             public Collection<FetchState> validTransitions() {
@@ -1086,6 +1113,7 @@ public class SubscriptionState {
      * the batch from a FetchResponse. It also includes the leader epoch at the time the batch was consumed.
      */
     public static class FetchPosition {
+        // 位置偏移量
         public final long offset;
         final Optional<Integer> offsetEpoch;
         final Metadata.LeaderAndEpoch currentLeader;

@@ -150,7 +150,8 @@ public class Fetcher<K, V> implements Closeable {
     private final long retryBackoffMs;
     // 向broker端发送请求的最大超时时间，默认是30ms，可以通过参数request.timeout.ms调整
     private final long requestTimeoutMs;
-    // 消费者单次拉取消息最大拉取数据条数，默认500，可以通过参数max.poll.records调整
+    // 消费者单次拉取消息最大拉取数据条数，默认500，可以通过参数max.poll.records调整（这个是对消费者而言的，fetcher找broker拉取数据时
+    // 是不会按条数来拉的，而是按照minBytes和maxBytes来决定拉取的数据量）
     private final int maxPollRecords;
     // 是否检查消息的crcs校验和，默认为true，可以通过check.crcs参数调整
     private final boolean checkCrcs;
@@ -159,7 +160,7 @@ public class Fetcher<K, V> implements Closeable {
     private final ConsumerMetadata metadata;
     // 消息拉取的统计服务
     private final FetchManagerMetrics sensors;
-    // 消费者的订阅信息（比如：订阅了哪些分区，订阅模式等）
+    // 消费者的订阅信息（比如：订阅了哪些分区，订阅模式等，订阅的分区的消费偏移量等）
     private final SubscriptionState subscriptions;
     // 已完成的fetch请求结果，待消费端从中取出数据（fetcher线程拉取到消息后就会构建成CompletedFetch对象，然后保存到这里，消费者拉取时直接从这里拉取，而不是去broker拉取）
     // 【重要】该集合里存放的是多个topic分区的拉取结果，而不是某个topic分区拉取结果
@@ -277,7 +278,7 @@ public class Fetcher<K, V> implements Closeable {
 
         // 1、【重要】封装node节点对应的fetch请求map
         Map<Node, FetchSessionHandler.FetchRequestData> fetchRequestMap = prepareFetchRequests();
-        // 遍历每个节点，按照node节点分别做发送请求的准备工作
+        // 遍历每个节点，按照node节点分别做发送请求的准备工作（可以看到这里是循环每个node，是以node维度来拉取数据的）
         for (Map.Entry<Node, FetchSessionHandler.FetchRequestData> entry : fetchRequestMap.entrySet()) {
             // 获取拉取的目标节点
             final Node fetchTarget = entry.getKey();
@@ -303,7 +304,7 @@ public class Fetcher<K, V> implements Closeable {
             // will be invoked synchronously.
             // 3、添加到fetcher正在拉取的节点集合里
             this.nodesWithPendingFetchRequests.add(entry.getKey().id());
-            // 4、注册一个监听器到 future 上，当发送成功后就会调用监听器
+            // 4、注册一个监听器到 future 上，当发送成功并收到响应后就会调用监听器
             future.addListener(new RequestFutureListener<ClientResponse>() {
                 @Override
                 public void onSuccess(ClientResponse resp) {
@@ -329,6 +330,7 @@ public class Fetcher<K, V> implements Closeable {
                             // 可以看到是以node维度来拉取数据的，一次性拉取该node上的多个分区的数据
                             for (Map.Entry<TopicPartition, FetchResponse.PartitionData<Records>> entry : response.responseData().entrySet()) {
                                 TopicPartition partition = entry.getKey();
+                                // 拉取数据的请求里的分区相关数据（包含分区号，从该分区哪里开始拉取等）
                                 FetchRequest.PartitionData requestData = data.sessionPartitions().get(partition);
                                 // 分区数据缺失
                                 if (requestData == null) {
@@ -347,6 +349,7 @@ public class Fetcher<K, V> implements Closeable {
                                     // 收到了缺失分区的响应
                                     throw new IllegalStateException(message);
                                 } else {
+                                    // 获取拉取的消息偏移量
                                     long fetchOffset = requestData.fetchOffset;
                                     // 拉取到的分区数据
                                     FetchResponse.PartitionData<Records> partitionData = entry.getValue();
@@ -637,6 +640,8 @@ public class Fetcher<K, V> implements Closeable {
      *
      * NOTE: returning empty records guarantees the consumed position are NOT updated.
      *
+     * NOTE: 这里会从缓存里拉取记录后会更新该分区的读取位置，以便于自动或手动提交偏移量时按该偏移量提交
+     *
      * @return The fetched records per partition
      * @throws OffsetOutOfRangeException If there is OffsetOutOfRange error in fetchResponse and
      *         the defaultResetPolicy is NONE
@@ -653,7 +658,7 @@ public class Fetcher<K, V> implements Closeable {
         try {
             // 3、通过while循环不断的从缓存中获取消息，直到获取到recordsRemaining条为止
             while (recordsRemaining > 0) {
-                // 4、判断当前获取消息的拉取任务的nextInLineFetch是否为空 或 已被消费，如果为空，则从completedFetches队列里获取一批消息
+                // 4、判断当前获取消息的拉取任务的nextInLineFetch是否为空 或 已被消费完成，如果为空，则从completedFetches队列里获取一批消息
                 // nextInLineFetch 是一个 CompletedFetch 类型，指的是一个分区的消息集合
                 if (nextInLineFetch == null || nextInLineFetch.isConsumed) {
                     // 从completedFetches队列里获取一批消息
@@ -696,6 +701,7 @@ public class Fetcher<K, V> implements Closeable {
                     nextInLineFetch = null;
                 } else {
                     // 6、如果nextInLineFetch不为空，则从 nextInLineFetch 中最大获取 recordsRemaining 条消息记录
+                    // 注意：这里会更新该分区的读取位置
                     List<ConsumerRecord<K, V>> records = fetchRecords(nextInLineFetch, recordsRemaining);
 
                     // 7、把获取到的消息进行封装
@@ -766,10 +772,12 @@ public class Fetcher<K, V> implements Closeable {
                 // 如果该分区的拉取位置大于当前位置，则更新拉取位置
                 if (completedFetch.nextFetchOffset > position.offset) {
                     FetchPosition nextPosition = new FetchPosition(
+                            // 该批次的下次读取偏移量
                             completedFetch.nextFetchOffset,
                             completedFetch.lastEpoch,
                             position.currentLeader);
                     log.trace("Update fetching position to {} for partition {}", nextPosition, completedFetch.partition);
+                    // 【重要】更新该分区的下次读取位置（下次消费者再来读取消息时也是从这个位置读取，提交偏移量时也要用到这个位置值）
                     subscriptions.position(completedFetch.partition, nextPosition);
                 }
 
@@ -1580,7 +1588,7 @@ public class Fetcher<K, V> implements Closeable {
         private final Iterator<? extends RecordBatch> batches;
         private final Set<Long> abortedProducerIds;
         private final PriorityQueue<FetchResponse.AbortedTransaction> abortedTransactions;
-        // 该分区的消息数据
+        // 该分区的消息数据（拉取到的数据就存储在这里面）
         private final FetchResponse.PartitionData<Records> partitionData;
         private final FetchResponseMetricAggregator metricAggregator;
         private final short responseVersion;
@@ -1625,6 +1633,7 @@ public class Fetcher<K, V> implements Closeable {
             if (!isConsumed) {
                 maybeCloseRecordStream();
                 cachedRecordException = null;
+                // 表示该 CompletedFetch 已经被消费者读取完毕
                 this.isConsumed = true;
                 this.metricAggregator.record(partition, bytesRead, recordsRead);
 

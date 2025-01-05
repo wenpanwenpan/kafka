@@ -129,12 +129,15 @@ public abstract class AbstractCoordinator implements Closeable {
     }
 
     private final Logger log;
+    // 心跳对象
     private final Heartbeat heartbeat;
     // 组协调器监控指标
     private final GroupCoordinatorMetrics sensors;
+    // 消费者组重分配配置
     private final GroupRebalanceConfig rebalanceConfig;
 
     protected final Time time;
+    // 负责网络通信
     protected final ConsumerNetworkClient client;
 
     // 组协调器所在的节点信息（该属性是在收到了FindCoordinator请求响应后通过响应信息构建出来的）
@@ -611,12 +614,20 @@ public abstract class AbstractCoordinator implements Closeable {
         // 构建入组请求JOIN_GROUP
         JoinGroupRequest.Builder requestBuilder = new JoinGroupRequest.Builder(
                 new JoinGroupRequestData()
+                        // 消费者组ID
                         .setGroupId(rebalanceConfig.groupId)
+                        // 客户端与broker的最大会话有效期，如果超过这个时间没有任何心跳，则有可能会发起Rebalance，属性：session.timeout.ms，默认10s
                         .setSessionTimeoutMs(this.rebalanceConfig.sessionTimeoutMs)
+                        // 消费者成员ID，默认就是空字符串
                         .setMemberId(this.generation.memberId)
+                        // 2.3版本引入，由用户指定的消费者实例唯一标识符，如果设置了，则消费者被视为静态成员，静态成员会分配较大的session超时时间
+                        // 避免因成员临时不可用而导致Rebalance，如果不设置，则消费者被认为是动态成员。配置参数：group.instance.id
                         .setGroupInstanceId(this.rebalanceConfig.groupInstanceId.orElse(null))
+                        // 协议类型，消费者的协议类型都是 consumer，另一个可选项是 connect
                         .setProtocolType(protocolType())
+                        // 配置分区分配策略和对应的订阅关系信息
                         .setProtocols(metadata())
+                        // 重平衡超时时间
                         .setRebalanceTimeoutMs(this.rebalanceConfig.rebalanceTimeoutMs)
         );
 
@@ -1619,8 +1630,9 @@ public abstract class AbstractCoordinator implements Closeable {
                 JoinGroupRequest.UNKNOWN_MEMBER_ID,
                 null);
 
+        // 每次Rebalance加一
         public final int generationId;
-        // 在消费者组中对应的成员ID，自动生成
+        // 在消费者组中对应的成员ID，由组协调器自动生成，客户端不可设置
         public final String memberId;
         public final String protocolName;
 

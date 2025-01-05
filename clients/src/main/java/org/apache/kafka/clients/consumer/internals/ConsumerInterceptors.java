@@ -50,6 +50,7 @@ public class ConsumerInterceptors<K, V> implements Closeable {
      * This method does not throw exceptions. If any of the interceptors in the chain throws an exception,
      * it gets caught and logged, and next interceptor in the chain is called with 'records' returned by the
      * previous successful interceptor onConsume call.
+     * 消费者端线程调用poll方法从本地缓存或broker端获取到消息记录，传递给消费者线程执行前调用该方法
      *
      * @param records records to be consumed by the client.
      * @return records that are either modified by interceptors or same as records passed to this method.
@@ -73,6 +74,7 @@ public class ConsumerInterceptors<K, V> implements Closeable {
      * This method calls {@link ConsumerInterceptor#onCommit(Map)} method for each interceptor.
      * <p>
      * This method does not throw exceptions. Exceptions thrown by any of the interceptors in the chain are logged, but not propagated.
+     * 提交消息消费偏移量后调用
      *
      * @param offsets A map of offsets by partition with associated metadata
      */

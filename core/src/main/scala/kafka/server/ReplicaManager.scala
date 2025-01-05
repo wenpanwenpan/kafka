@@ -1060,10 +1060,12 @@ class ReplicaManager(val config: KafkaConfig,
         readPartitionInfo = fetchInfos,
         quota = quota,
         clientMetadata = clientMetadata)
+      // 如果是follower发起的读取，则更新下follower拉取状态
       if (isFromFollower) updateFollowerFetchState(replicaId, result)
       else result
     }
 
+    // 从日志文件里读取数据
     val logReadResults = readFromLog()
 
     // check if this fetch request can be satisfied right away
@@ -1135,16 +1137,22 @@ class ReplicaManager(val config: KafkaConfig,
                        fetchIsolation: FetchIsolation,
                        fetchMaxBytes: Int,
                        hardMaxBytesLimit: Boolean,
+                       // 【重要，要读取的分区】可以看到一起读取请求可以读取多个分区的数据
                        readPartitionInfo: Seq[(TopicPartition, PartitionData)],
                        quota: ReplicaQuota,
                        clientMetadata: Option[ClientMetadata]): Seq[(TopicPartition, LogReadResult)] = {
     val traceEnabled = isTraceEnabled
 
+    // 读取消息
     def read(tp: TopicPartition, fetchInfo: PartitionData, limitBytes: Int, minOneMessage: Boolean): LogReadResult = {
+      // 从什么位置开始读取
       val offset = fetchInfo.fetchOffset
+      // 最大读取多少字节
       val partitionFetchSize = fetchInfo.maxBytes
+      // leo
       val followerLogStartOffset = fetchInfo.logStartOffset
 
+      // 还需要从该分区读取多少字节数据
       val adjustedMaxBytes = math.min(fetchInfo.maxBytes, limitBytes)
       try {
         if (traceEnabled)
@@ -1152,6 +1160,7 @@ class ReplicaManager(val config: KafkaConfig,
             s"remaining response limit $limitBytes" +
             (if (minOneMessage) s", ignoring response/partition size limits" else ""))
 
+        // 获取要读取的分区
         val partition = getPartitionOrException(tp)
         val fetchTimeMs = time.milliseconds
 
@@ -1181,11 +1190,12 @@ class ReplicaManager(val config: KafkaConfig,
           // 【重要】调用 partition的readRecords方法读取消息
           val readInfo: LogReadInfo = partition.readRecords(
             lastFetchedEpoch = fetchInfo.lastFetchedEpoch,
-            fetchOffset = fetchInfo.fetchOffset,
+            fetchOffset = fetchInfo.fetchOffset, // 从哪个偏移量开始读取
             currentLeaderEpoch = fetchInfo.currentLeaderEpoch,
-            maxBytes = adjustedMaxBytes,
+            maxBytes = adjustedMaxBytes, // 调整后的最大读取字节数
             fetchIsolation = fetchIsolation,
             fetchOnlyFromLeader = fetchOnlyFromLeader,
+            // 是否至少要读取一条消息，这个参数用于那种一条消息大小就超过了最大读取消息字节数的情况，保证至少有消息能被读取
             minOneMessage = minOneMessage)
 
           val fetchDataInfo = if (shouldLeaderThrottle(quota, partition, replicaId)) {
@@ -1199,6 +1209,7 @@ class ReplicaManager(val config: KafkaConfig,
             readInfo.fetchedData
           }
 
+          // 封装读取结果
           LogReadResult(info = fetchDataInfo,
             divergingEpoch = readInfo.divergingEpoch,
             highWatermark = readInfo.highWatermark,
@@ -1249,18 +1260,29 @@ class ReplicaManager(val config: KafkaConfig,
       }
     }
 
+    // 最大读取的字节数
     var limitBytes = fetchMaxBytes
+    // 读取到的结果集合，按照分区进行组织
     val result = new mutable.ArrayBuffer[(TopicPartition, LogReadResult)]
     var minOneMessage = !hardMaxBytesLimit
+    // 遍历要读取的分区集合
+    // 【非常重要】可以看到对于broker而言，是不会感知到消费者需要读取多少条数据的，而是通过请求里传递的最大读取字节数和
+    // 最小读取字节数来决定读取多少数据然后返回给消费者（或follower）的
     readPartitionInfo.foreach { case (tp, fetchInfo) =>
+      // 注意读取分区数据，limitBytes 表示还需要读取多少字节
       val readResult = read(tp, fetchInfo, limitBytes, minOneMessage)
+      // 读取了多少数据
       val recordBatchSize = readResult.info.records.sizeInBytes
       // Once we read from a non-empty partition, we stop ignoring request and partition level size limits
+      // 一旦读取到了数据，那么minOneMessage的作用就失效了
       if (recordBatchSize > 0)
         minOneMessage = false
+      // 计算还需要读取多少字节
       limitBytes = math.max(0, limitBytes - recordBatchSize)
+      // 将读取结果添加到结果集合中
       result += (tp -> readResult)
     }
+    // 返回读取的结果
     result
   }
 

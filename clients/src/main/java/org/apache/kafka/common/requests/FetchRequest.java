@@ -40,6 +40,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+// 分区消息拉取请求
 public class FetchRequest extends AbstractRequest {
 
     public static final int CONSUMER_REPLICA_ID = -1;
@@ -51,6 +52,7 @@ public class FetchRequest extends AbstractRequest {
     private final FetchRequestData data;
 
     // These are immutable read-only structures derived from FetchRequestData
+    // 每个分区的拉取信息(包括从什么位置开始拉，拉多少等)
     private final Map<TopicPartition, PartitionData> fetchData;
     private final List<TopicPartition> toForget;
     private final FetchMetadata metadata;
@@ -60,8 +62,11 @@ public class FetchRequest extends AbstractRequest {
     }
 
     public static final class PartitionData {
+        // 拉取的偏移量
         public final long fetchOffset;
+        // broker端的日志起始偏移量
         public final long logStartOffset;
+        // 最大读取字节数
         public final int maxBytes;
         public final Optional<Integer> currentLeaderEpoch;
         public final Optional<Integer> lastFetchedEpoch;

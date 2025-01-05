@@ -87,6 +87,9 @@ public class Consumer extends ShutdownableThread {
         for (ConsumerRecord<Integer, String> record : records) {
             System.out.println(groupId + " received message : from partition " + record.partition() + ", (" + record.key() + ", " + record.value() + ") at offset " + record.offset());
         }
+        // 同步提交偏移量
+        consumer.commitSync();
+        consumer.commitAsync();
         messageRemaining -= records.count();
         if (messageRemaining <= 0) {
             System.out.println(groupId + " finished reading " + numMessageToConsume + " messages");

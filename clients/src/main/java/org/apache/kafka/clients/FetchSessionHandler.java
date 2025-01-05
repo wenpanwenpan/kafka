@@ -73,6 +73,7 @@ public class FetchSessionHandler {
     private LinkedHashMap<TopicPartition, PartitionData> sessionPartitions =
         new LinkedHashMap<>(0);
 
+    // 拉取数据请求数据
     public static class FetchRequestData {
         /**
          * The partitions to send in the fetch request.

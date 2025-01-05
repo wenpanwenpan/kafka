@@ -87,43 +87,59 @@ import static org.apache.kafka.clients.consumer.CooperativeStickyAssignor.COOPER
  * This class manages the coordination process with the consumer coordinator.
  */
 public final class ConsumerCoordinator extends AbstractCoordinator {
+    // 消费者组重平衡配置信息
     private final GroupRebalanceConfig rebalanceConfig;
     private final Logger log;
     // 支持的分区分配策略
     private final List<ConsumerPartitionAssignor> assignors;
     // 消费者元数据
     private final ConsumerMetadata metadata;
+    // 消费者协调器指标信息
     private final ConsumerCoordinatorMetrics sensors;
-    // 该消费者的订阅信息
+    // 该消费者的订阅信息（保存了订阅的topic分区和offset的对应关系）
     private final SubscriptionState subscriptions;
+    // 默认的偏移量条回调
     private final OffsetCommitCallback defaultOffsetCommitCallback;
     // 是否开启了自动提交
     private final boolean autoCommitEnabled;
+    // 自动提交偏移量的时间间隔
     private final int autoCommitIntervalMs;
+    // 消费者消费者消息拦截器
     private final ConsumerInterceptors<?, ?> interceptors;
+    // 待处理的异步提交偏移量数量计数器
     private final AtomicInteger pendingAsyncCommits;
 
     // this collection must be thread-safe because it is modified from the response handler
     // of offset commit requests, which may be invoked from the heartbeat thread
+    // 异步提交偏移量完成的队列
     private final ConcurrentLinkedQueue<OffsetCommitCompletion> completedOffsetCommits;
 
+    // 是否为消费者组的leader
     private boolean isLeader = false;
+    // 加入消费者组的订阅信息（也就是订阅的topic集合）
     private Set<String> joinedSubscription;
-    // 元数据快照
+    // 元数据快照，保存分区信息，用来监控分区信息是否变了
     private MetadataSnapshot metadataSnapshot;
+    // 分配结果快照，保存分区分配结果
     private MetadataSnapshot assignmentSnapshot;
+    // 下一次自动提交偏移量定时器
     private Timer nextAutoCommitTimer;
+    // 标识异步提交偏移量是否被取消
     private AtomicBoolean asyncCommitFenced;
     // 消费者组元数据信息
     private ConsumerGroupMetadata groupMetadata;
     private final boolean throwOnFetchStableOffsetsUnsupported;
 
     // hold onto request&future for committed offset requests to enable async calls.
+    // 等待处理的提交偏移量请求
     private PendingCommittedOffsetRequest pendingCommittedOffsetRequest = null;
 
+    // 等待提交偏移量请求
     private static class PendingCommittedOffsetRequest {
+        // 需要提交偏移量的分区
         private final Set<TopicPartition> requestedPartitions;
         private final Generation requestedGeneration;
+        // 提交偏移量响应
         private final RequestFuture<Map<TopicPartition, OffsetAndMetadata>> response;
 
         private PendingCommittedOffsetRequest(final Set<TopicPartition> requestedPartitions,
@@ -966,11 +982,13 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
     // visible for testing
     void invokeCompletedOffsetCommitCallbacks() {
+        // 异步提交偏移量被取消，则抛出异常
         if (asyncCommitFenced.get()) {
             throw new FencedInstanceIdException("Get fenced exception for group.instance.id "
                 + rebalanceConfig.groupInstanceId.orElse("unset_instance_id")
                 + ", current member.id is " + memberId());
         }
+        // 从 completedOffsetCommits 队列里取出 所有已经完成偏移量提交的回调函数进行执行
         while (true) {
             OffsetCommitCompletion completion = completedOffsetCommits.poll();
             if (completion == null) {
@@ -1017,8 +1035,10 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     }
 
     private void doCommitOffsetsAsync(final Map<TopicPartition, OffsetAndMetadata> offsets, final OffsetCommitCallback callback) {
+        // 发送提交提交偏移量请求
         RequestFuture<Void> future = sendOffsetCommitRequest(offsets);
         final OffsetCommitCallback cb = callback == null ? defaultOffsetCommitCallback : callback;
+        // 在发送提交偏移量请求返回的future上注册一个回调函数
         future.addListener(new RequestFutureListener<Void>() {
             @Override
             public void onSuccess(Void value) {
@@ -1054,17 +1074,22 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
      *         the coordinator
      */
     public boolean commitOffsetsSync(Map<TopicPartition, OffsetAndMetadata> offsets, Timer timer) {
+        // 执行已经完成偏移量提交的回调
         invokeCompletedOffsetCommitCallbacks();
 
+        // 没有需要提交偏移量的分区，则直接返回
         if (offsets.isEmpty())
             return true;
 
         do {
+            // 如果没有组协调器，则尝试查找并与组协调器建立连接，如果连接失败则返回false
             if (coordinatorUnknown() && !ensureCoordinatorReady(timer)) {
                 return false;
             }
 
+            // 发送提交偏移量请求
             RequestFuture<Void> future = sendOffsetCommitRequest(offsets);
+            // 阻塞轮询客户端，直到请求完成或超时
             client.poll(future, timer);
 
             // We may have had in-flight offset commits when the synchronous commit began. If so, ensure that
@@ -1072,12 +1097,14 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             // the offset commits were applied.
             invokeCompletedOffsetCommitCallbacks();
 
+            // 如果提交偏移量成功，则回调拦截器的 onCommit 方法并返回true
             if (future.succeeded()) {
                 if (interceptors != null)
                     interceptors.onCommit(offsets);
                 return true;
             }
 
+            // 如果提交偏移量失败，则抛出异常
             if (future.failed() && !future.isRetriable())
                 throw future.exception();
 
@@ -1119,9 +1146,11 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
     private void maybeAutoCommitOffsetsSync(Timer timer) {
         if (autoCommitEnabled) {
+            // 获取所订阅的所有分区的已消费的偏移量
             Map<TopicPartition, OffsetAndMetadata> allConsumedOffsets = subscriptions.allConsumed();
             try {
                 log.debug("Sending synchronous auto-commit of offsets {}", allConsumedOffsets);
+                // 同步提交偏移量
                 if (!commitOffsetsSync(allConsumedOffsets, timer))
                     log.debug("Auto-commit of offsets {} timed out before completion", allConsumedOffsets);
             } catch (WakeupException | InterruptException e) {
@@ -1157,39 +1186,52 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         if (offsets.isEmpty())
             return RequestFuture.voidSuccess();
 
+        // 检查组协调器节点必须正常
         Node coordinator = checkAndGetCoordinator();
         if (coordinator == null)
             return RequestFuture.coordinatorNotAvailable();
 
-        // create the offset commit request
+        // create the offset commit request，key是topic名称，value是该topic下每个分区需要提交的偏移量相关数据
         Map<String, OffsetCommitRequestData.OffsetCommitRequestTopic> requestTopicDataMap = new HashMap<>();
+        // 遍历每个要提交偏移量的分区
         for (Map.Entry<TopicPartition, OffsetAndMetadata> entry : offsets.entrySet()) {
+            // 要提交偏移量的分区
             TopicPartition topicPartition = entry.getKey();
+            // 要提交偏移量的元数据
             OffsetAndMetadata offsetAndMetadata = entry.getValue();
+            // 提交的偏移量小于0，则说明是无效提交，直接返回提交失败
             if (offsetAndMetadata.offset() < 0) {
                 return RequestFuture.failure(new IllegalArgumentException("Invalid offset: " + offsetAndMetadata.offset()));
             }
 
+            // 以topic维度的偏移量提交请求（里面包含了topic和该topic下要提交偏移量的分区数据）
             OffsetCommitRequestData.OffsetCommitRequestTopic topic = requestTopicDataMap
                     .getOrDefault(topicPartition.topic(),
                             new OffsetCommitRequestData.OffsetCommitRequestTopic()
                                     .setName(topicPartition.topic())
                     );
 
+            // 将要提交偏移量的分区数据添加到该topic下
             topic.partitions().add(new OffsetCommitRequestData.OffsetCommitRequestPartition()
+                    // 分区
                     .setPartitionIndex(topicPartition.partition())
+                    // 要提交的偏移量信息
                     .setCommittedOffset(offsetAndMetadata.offset())
                     .setCommittedLeaderEpoch(offsetAndMetadata.leaderEpoch().orElse(RecordBatch.NO_PARTITION_LEADER_EPOCH))
+                    // 提交的元数据
                     .setCommittedMetadata(offsetAndMetadata.metadata())
             );
             requestTopicDataMap.put(topicPartition.topic(), topic);
         }
 
         final Generation generation;
+        // 只处理，指定的topic进行订阅并且自动分配分区 或者 是基于通配符进行订阅并自动分配分区的订阅模式 的情况
         if (subscriptions.hasAutoAssignedPartitions()) {
             generation = generationIfStable();
             // if the generation is null, we are not part of an active group (and we expect to be).
             // the only thing we can do is fail the commit and let the user rejoin the group in poll().
+            // 如果generation == null，则说明该消费者不是消费者组中的成员（也就是该消费者协调器的状态不是STABLE），则不能进行偏移量提交
+            // 这种情况需要等待该消费者成员重新入组
             if (generation == null) {
                 log.info("Failing OffsetCommit request since the consumer is not part of an active group");
 
@@ -1209,22 +1251,31 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             generation = Generation.NO_GENERATION;
         }
 
+        // 根据多个topic下的多个分区需要提交的偏移量数据构建偏移量提交请求
         OffsetCommitRequest.Builder builder = new OffsetCommitRequest.Builder(
                 new OffsetCommitRequestData()
+                        // 消费者组ID
                         .setGroupId(this.rebalanceConfig.groupId)
                         .setGenerationId(generation.generationId)
+                        // 消费者成员ID
                         .setMemberId(generation.memberId)
+                        // 消费者实例ID（静态成员才有）
                         .setGroupInstanceId(rebalanceConfig.groupInstanceId.orElse(null))
+                        // 每个topic下每个分区需要提交的偏移量数据
                         .setTopics(new ArrayList<>(requestTopicDataMap.values()))
         );
 
         log.trace("Sending OffsetCommit request with {} to coordinator {}", offsets, coordinator);
 
+        // 发送偏移量提交请求（这里会返回一个future）
         return client.send(coordinator, builder)
+                // 在上一步返回的future上注册回调，并返回一个新的future
                 .compose(new OffsetCommitResponseHandler(offsets, generation));
     }
 
+    // 偏移量提交响应回调处理器
     private class OffsetCommitResponseHandler extends CoordinatorResponseHandler<OffsetCommitResponse, Void> {
+        // 偏移量信息管理
         private final Map<TopicPartition, OffsetAndMetadata> offsets;
 
         private OffsetCommitResponseHandler(Map<TopicPartition, OffsetAndMetadata> offsets, Generation generation) {
@@ -1234,19 +1285,26 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
         @Override
         public void handle(OffsetCommitResponse commitResponse, RequestFuture<Void> future) {
+            // 指标记录
             sensors.commitSensor.record(response.requestLatencyMs());
             Set<String> unauthorizedTopics = new HashSet<>();
 
+            // 获取提交偏移量的响应数据并遍历（以topic维度返回）
             for (OffsetCommitResponseData.OffsetCommitResponseTopic topic : commitResponse.data().topics()) {
+                // 遍历该topic下的提交分区
                 for (OffsetCommitResponseData.OffsetCommitResponsePartition partition : topic.partitions()) {
                     TopicPartition tp = new TopicPartition(topic.name(), partition.partitionIndex());
+                    // 获取该分区的偏移量和元数据
                     OffsetAndMetadata offsetAndMetadata = this.offsets.get(tp);
 
+                    // 获取该分区的偏移量
                     long offset = offsetAndMetadata.offset();
 
                     Errors error = Errors.forCode(partition.errorCode());
+                    // 提交成功
                     if (error == Errors.NONE) {
                         log.debug("Committed offset {} for partition {}", offset, tp);
+                        // 提交失败的各种情况处理
                     } else {
                         if (error.exception() instanceof RetriableException) {
                             log.warn("Offset commit failed on partition {} at offset {}: {}", tp, offset, error.message());
@@ -1328,10 +1386,12 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 }
             }
 
+            // 存在未授权的topic，则抛出授权异常
             if (!unauthorizedTopics.isEmpty()) {
                 log.error("Not authorized to commit to topics {}", unauthorizedTopics);
                 future.raise(new TopicAuthorizationException(unauthorizedTopics));
             } else {
+                // 回调 complete
                 future.complete(null);
             }
         }

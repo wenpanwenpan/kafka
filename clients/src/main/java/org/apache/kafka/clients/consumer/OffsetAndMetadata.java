@@ -30,7 +30,9 @@ import java.util.Optional;
 public class OffsetAndMetadata implements Serializable {
     private static final long serialVersionUID = 2019555404968089681L;
 
+    // 偏移量
     private final long offset;
+    // 元数据
     private final String metadata;
 
     // We use null to represent the absence of a leader epoch to simplify serialization.
