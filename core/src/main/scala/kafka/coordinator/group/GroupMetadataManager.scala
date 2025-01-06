@@ -340,11 +340,13 @@ class GroupMetadataManager(brokerId: Int, // 所在broker的ID
                              records: Map[TopicPartition, MemoryRecords],
                              callback: Map[TopicPartition, PartitionResponse] => Unit): Unit = {
     // call replica manager to append the group message
+    // 通过 replicaManager 的 appendRecords 方法将该消费者组对应的偏移量信息写入到 log 中（__consumer_offsets topic的某个分区日志中）
     replicaManager.appendRecords(
       timeout = config.offsetCommitTimeoutMs.toLong,
       requiredAcks = config.offsetCommitRequiredAcks,
       internalTopicsAllowed = true,
       origin = AppendOrigin.Coordinator,
+      // 消费者组下每个分区的偏移量信息
       entriesPerPartition = records,
       delayedProduceLock = Some(group.lock),
       responseCallback = callback)
@@ -360,6 +362,7 @@ class GroupMetadataManager(brokerId: Int, // 所在broker的ID
                    producerId: Long = RecordBatch.NO_PRODUCER_ID,
                    producerEpoch: Short = RecordBatch.NO_PRODUCER_EPOCH): Unit = {
     // first filter out partitions with offset metadata size exceeding limit
+    // 过滤出元数据长度超出限制的offset metadata
     val filteredOffsetMetadata = offsetMetadata.filter { case (_, offsetAndMetadata) =>
       validateOffsetMetadataLength(offsetAndMetadata.metadata)
     }
@@ -385,11 +388,17 @@ class GroupMetadataManager(brokerId: Int, // 所在broker的ID
           val timestampType = TimestampType.CREATE_TIME
           val timestamp = time.milliseconds()
 
+          // 【重要】消费者提交的偏移量分区和偏移量组装成records
           val records = filteredOffsetMetadata.map { case (topicPartition, offsetAndMetadata) =>
+            // 将消费者组、topic、分区信息写入到buffer，并返回写入后的字节数组
             val key = GroupMetadataManager.offsetCommitKey(group.groupId, topicPartition)
+            // 偏移量、元数据、提交时间等写入到buffer，并返回写入后的字节数组
             val value = GroupMetadataManager.offsetCommitValue(offsetAndMetadata, interBrokerProtocolVersion)
+            // 将key-value封装成SimpleRecord
             new SimpleRecord(timestamp, key, value)
           }
+          // 查找管理该消费者组的 __consumer_offsets topic对应的分区
+          // 其实就是用消费者组id对__consumer_offsets topic的分区数取模，得到分区号
           val offsetTopicPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, partitionFor(group.groupId))
           val buffer = ByteBuffer.allocate(AbstractRecords.estimateSizeInBytes(magicValue, compressionType, records.asJava))
 
@@ -399,7 +408,9 @@ class GroupMetadataManager(brokerId: Int, // 所在broker的ID
           val builder = MemoryRecords.builder(buffer, magicValue, compressionType, timestampType, 0L, time.milliseconds(),
             producerId, producerEpoch, 0, isTxnOffsetCommit, RecordBatch.NO_PARTITION_LEADER_EPOCH)
 
+          // 将records里每个记录写入builder里的buffer里
           records.foreach(builder.append)
+          // 这些提交的偏移量都是要写入到 offsetTopicPartition 这个 __consumer_offsets topic的分区的
           val entries = Map(offsetTopicPartition -> builder.build())
 
           // set the callback function to insert offsets into cache after log append completed
@@ -475,6 +486,7 @@ class GroupMetadataManager(brokerId: Int, // 所在broker的ID
             responseCallback(commitStatus)
           }
 
+          // 事务偏移量提交
           if (isTxnOffsetCommit) {
             group.inLock {
               addProducerGroup(producerId, group.groupId)
@@ -482,10 +494,12 @@ class GroupMetadataManager(brokerId: Int, // 所在broker的ID
             }
           } else {
             group.inLock {
+              // 【重要】普通偏移量提交（这里只是更新到元数据内存中）
               group.prepareOffsetCommit(offsetMetadata)
             }
           }
 
+          // 【重要】将提交的分区偏移量写入到 __consumer_offsets 对应的分区的里进行持久化
           appendForGroup(group, entries, putCacheCallback)
 
         case None =>
@@ -1194,13 +1208,18 @@ object GroupMetadataManager {
    */
   def offsetCommitKey(groupId: String, topicPartition: TopicPartition): Array[Byte] = {
     val key = new Struct(CURRENT_OFFSET_KEY_SCHEMA)
+    // 消费者组ID
     key.set(OFFSET_KEY_GROUP_FIELD, groupId)
+    // 偏移量提交对应的topic
     key.set(OFFSET_KEY_TOPIC_FIELD, topicPartition.topic)
+    // 偏移量提交对应的分区
     key.set(OFFSET_KEY_PARTITION_FIELD, topicPartition.partition)
 
     val byteBuffer = ByteBuffer.allocate(2 /* version */ + key.sizeOf)
     byteBuffer.putShort(CURRENT_OFFSET_KEY_SCHEMA_VERSION)
+    // 将key写入到byteBuffer
     key.writeTo(byteBuffer)
+    // 以数组形式返回
     byteBuffer.array()
   }
 
@@ -1233,8 +1252,11 @@ object GroupMetadataManager {
     val (version, value) = {
       if (apiVersion < KAFKA_2_1_IV0 || offsetAndMetadata.expireTimestamp.nonEmpty) {
         val value = new Struct(OFFSET_COMMIT_VALUE_SCHEMA_V1)
+        // 偏移量
         value.set(OFFSET_VALUE_OFFSET_FIELD_V1, offsetAndMetadata.offset)
+        // 元数据
         value.set(OFFSET_VALUE_METADATA_FIELD_V1, offsetAndMetadata.metadata)
+        // 提交时间
         value.set(OFFSET_VALUE_COMMIT_TIMESTAMP_FIELD_V1, offsetAndMetadata.commitTimestamp)
         // version 1 has a non empty expireTimestamp field
         value.set(OFFSET_VALUE_EXPIRE_TIMESTAMP_FIELD_V1,
@@ -1242,6 +1264,7 @@ object GroupMetadataManager {
         (1, value)
       } else if (apiVersion < KAFKA_2_1_IV1) {
         val value = new Struct(OFFSET_COMMIT_VALUE_SCHEMA_V2)
+        // 偏移量
         value.set(OFFSET_VALUE_OFFSET_FIELD_V2, offsetAndMetadata.offset)
         value.set(OFFSET_VALUE_METADATA_FIELD_V2, offsetAndMetadata.metadata)
         value.set(OFFSET_VALUE_COMMIT_TIMESTAMP_FIELD_V2, offsetAndMetadata.commitTimestamp)

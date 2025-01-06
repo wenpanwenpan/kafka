@@ -153,7 +153,7 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
         case ApiKeys.UPDATE_METADATA => handleUpdateMetadataRequest(request)
         // 控制broker的关机操作
         case ApiKeys.CONTROLLED_SHUTDOWN => handleControlledShutdownRequest(request)
-        // 将消费者组的偏移量提交到kafka中
+        // 【重要】将消费者组的偏移量提交到kafka中
         case ApiKeys.OFFSET_COMMIT => handleOffsetCommitRequest(request)
         // 从kafka中获取消费者组当前的偏移量
         case ApiKeys.OFFSET_FETCH => handleOffsetFetchRequest(request)
@@ -428,6 +428,7 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
    */
   def handleOffsetCommitRequest(request: RequestChannel.Request): Unit = {
     val header = request.header
+    // 获取偏移量提交请求
     val offsetCommitRequest = request.body[OffsetCommitRequest]
 
     val unauthorizedTopicErrors = mutable.Map[TopicPartition, Errors]()
@@ -446,7 +447,7 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
         new OffsetCommitResponse(requestThrottleMs, combinedCommitStatus.asJava))
     }
 
-    // reject the request if not authorized to the group
+    // reject the request if not authorized to the group 权限校验
     if (!authorize(request.context, READ, GROUP, offsetCommitRequest.data.groupId)) {
       val error = Errors.GROUP_AUTHORIZATION_FAILED
       val responseTopicList = OffsetCommitRequest.getErrorResponseTopics(
@@ -548,11 +549,14 @@ class KafkaApis(val requestChannel: RequestChannel,// 请求通道
         }
 
         // call coordinator to handle commit offset
+        // 【重要】处理偏移量提交
         groupCoordinator.handleCommitOffsets(
-          offsetCommitRequest.data.groupId,
-          offsetCommitRequest.data.memberId,
+          offsetCommitRequest.data.groupId, // 消费者组ID
+          offsetCommitRequest.data.memberId, // 消费者成员ID
+          // 静态成员ID
           Option(offsetCommitRequest.data.groupInstanceId),
           offsetCommitRequest.data.generationId,
+          // 提交的数据
           partitionData,
           sendResponseCallback)
       }

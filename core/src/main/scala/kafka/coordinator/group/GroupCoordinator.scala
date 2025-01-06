@@ -730,6 +730,7 @@ class GroupCoordinator(val brokerId: Int,
                           memberId: String,
                           groupInstanceId: Option[String],
                           generationId: Int,
+                         // 消费者提交的偏移量信息，key是topic分区，value是偏移量元数据
                           offsetMetadata: immutable.Map[TopicPartition, OffsetAndMetadata],
                           responseCallback: immutable.Map[TopicPartition, Errors] => Unit): Unit = {
     validateGroupStatus(groupId, ApiKeys.OFFSET_COMMIT) match {
@@ -747,6 +748,7 @@ class GroupCoordinator(val brokerId: Int,
             }
 
           case Some(group) =>
+            // 提交偏移量
             doCommitOffsets(group, memberId, groupInstanceId, generationId, offsetMetadata, responseCallback)
         }
     }
@@ -796,6 +798,7 @@ class GroupCoordinator(val brokerId: Int,
                               offsetMetadata: immutable.Map[TopicPartition, OffsetAndMetadata],
                               responseCallback: immutable.Map[TopicPartition, Errors] => Unit): Unit = {
     group.inLock {
+      // 消费者组状态是dead
       if (group.is(Dead)) {
         // if the group is marked as dead, it means some other thread has just removed the group
         // from the coordinator metadata; it is likely that the group has migrated to some other
@@ -807,19 +810,23 @@ class GroupCoordinator(val brokerId: Int,
       } else if (generationId < 0 && group.is(Empty)) {
         // The group is only using Kafka to store offsets.
         groupManager.storeOffsets(group, memberId, offsetMetadata, responseCallback)
+        // 该成员已经不在该消费者组中了
       } else if (!group.has(memberId)) {
         responseCallback(offsetMetadata.map { case (k, _) => k -> Errors.UNKNOWN_MEMBER_ID })
       } else if (generationId != group.generationId) {
         responseCallback(offsetMetadata.map { case (k, _) => k -> Errors.ILLEGAL_GENERATION })
       } else {
         group.currentState match {
+          // 该消费者组状态正常
           case Stable | PreparingRebalance =>
             // During PreparingRebalance phase, we still allow a commit request since we rely
             // on heartbeat response to eventually notify the rebalance in progress signal to the consumer
             val member = group.get(memberId)
             completeAndScheduleNextHeartbeatExpiration(group, member)
+            // 调用 groupManager 的 storeOffsets 方法来提交偏移量
             groupManager.storeOffsets(group, memberId, offsetMetadata, responseCallback)
 
+            // 该消费者组正处于分配分区方案过程中
           case CompletingRebalance =>
             // We should not receive a commit request if the group has not completed rebalance;
             // but since the consumer's member.id and generation is valid, it means it has received

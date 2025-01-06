@@ -699,6 +699,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
 
   def prepareOffsetCommit(offsets: Map[TopicPartition, OffsetAndMetadata]): Unit = {
     receivedConsumerOffsetCommits = true
+    // 将该分区的偏移量提交记录添加到 pendingOffsetCommits 集合中（map集合）
     pendingOffsetCommits ++= offsets
   }
 
